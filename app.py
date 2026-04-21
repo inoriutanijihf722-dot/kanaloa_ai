@@ -301,6 +301,7 @@ with tab1:
             st.warning("データを入力してください")
         else:
             weights = get_adaptive_weights()
+            df_old = load_history()
             new_recs = []
 
             for h in user_inputs:
@@ -450,11 +451,11 @@ with tab1:
 
                 if is_front_fav and "前走展開不利" in movie_bad_list and h['tp'] == "15":
                     bias_penalty += 5
-                    factors.append("前有利馬場で前走展開不利見直し(+5)")
+                    factors.append("前有利×前走展開不利見直し(+5)")
 
                 if is_closer_fav and "前走展開不利" in movie_bad_list and h['tp'] == "50":
                     bias_penalty += 5
-                    factors.append("差し有利馬場で前走展開不利見直し(+5)")
+                    factors.append("差し有利×前走展開不利見直し(+5)")
 
                 # ⑤ 暴走防止
                 bias_penalty = max(-15, min(10, bias_penalty))
@@ -512,6 +513,15 @@ with tab1:
                 if bet > 0:
                     st.success(f"推奨投資額: ¥{bet:,} (単複各 ¥{bet//2:,} を推奨)")
 
+                bias_note = f"【速度:{r_speed}】【内外:{bias_inout}】【前後:{bias_front}】"
+                old_note_series = df_old.loc[
+                    (df_old['日付'].astype(str) == str(r_date)) & (df_old['馬名'].astype(str) == str(h['名前'])),
+                    '備考'
+                ]
+                old_note = "" if old_note_series.empty else str(old_note_series.iloc[-1]).replace('nan', '')
+                cleaned_old_note = re.sub(r'【(?:速度|内外|前後):[^】]*】', '', old_note).strip()
+                merged_note = f"{bias_note}{cleaned_old_note}" if cleaned_old_note else bias_note
+
                 new_recs.append({
                     '日付': r_date,
                     '場': r_place,
@@ -531,10 +541,9 @@ with tab1:
                     '着順': "",
                     '単勝払戻': 0,
                     '複勝払戻': 0,
-                    '備考': f"【速度:{r_speed}】【内外:{bias_inout}】【前後:{bias_front}】"
+                    '備考': merged_note
                 })
 
-            df_old = load_history()
             save_history(
                 pd.concat([df_old, pd.DataFrame(new_recs)], ignore_index=True)
                 .drop_duplicates(subset=['日付', '馬名'], keep='last')
@@ -604,8 +613,13 @@ with tab3:
 
         st.subheader("🔍 個別データ・エクスプローラー")
         col_s1, col_s2 = st.columns(2)
-        search_name = col_s1.text_input("馬名または馬主で検索 (空欄で全表示)")
+        search_name = col_s1.text_input("馬名・馬主・備考で検索 (空欄で全表示)")
         filter_grade = col_s2.multiselect("判定で絞り込み", ["A", "B", "C", "C (少頭数除外)"], default=["A", "B", "C", "C (少頭数除外)"])
+        st.caption("例：アンチG / 速度:高速 / 内外:内有利 / 前後:前有利 / 外回し")
+        col_b1, col_b2, col_b3 = st.columns(3)
+        filter_speed = col_b1.selectbox("速度タグ", ["すべて", "超高速", "高速", "標準", "タフ", "極悪"])
+        filter_inout = col_b2.selectbox("内外タグ", ["すべて", "内有利", "やや内", "フラット", "やや外", "外有利"])
+        filter_front = col_b3.selectbox("前後タグ", ["すべて", "前有利", "やや前", "フラット", "やや差", "差有利"])
 
         display_df = df_anl.copy()
 
@@ -613,11 +627,21 @@ with tab3:
             s_word = search_name.strip()
             display_df = display_df[
                 display_df['馬名'].astype(str).str.contains(s_word, na=False) |
-                display_df['馬主'].astype(str).str.contains(s_word, na=False)
+                display_df['馬主'].astype(str).str.contains(s_word, na=False) |
+                display_df['備考'].astype(str).str.contains(s_word, na=False)
             ]
 
         if filter_grade:
             display_df = display_df[display_df['投資判定'].astype(str).isin(filter_grade)]
+
+        if filter_speed != "すべて":
+            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【速度:{filter_speed}】", na=False)]
+
+        if filter_inout != "すべて":
+            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【内外:{filter_inout}】", na=False)]
+
+        if filter_front != "すべて":
+            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【前後:{filter_front}】", na=False)]
 
         safe_cols = [c for c in REQUIRED_COLUMNS if c in display_df.columns]
         st.dataframe(display_df[safe_cols].sort_values('日付', ascending=False), use_container_width=True)
