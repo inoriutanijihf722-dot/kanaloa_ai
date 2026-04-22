@@ -308,6 +308,18 @@ with tab1:
                 score = 80
                 factors = [h['タイプ']]
 
+                # 同馬の前走（今回より前の日付で最新）の備考に「度外視可能」があれば見直し加点
+                horse_hist = df_old[df_old['馬名'].astype(str) == str(h['名前'])].copy()
+                if not horse_hist.empty:
+                    horse_hist['日付_dt'] = pd.to_datetime(horse_hist['日付'], errors='coerce')
+                    current_dt = pd.to_datetime(r_date, errors='coerce')
+                    prev_hist = horse_hist[horse_hist['日付_dt'] < current_dt].sort_values('日付_dt')
+                    if not prev_hist.empty:
+                        last_note = str(prev_hist.iloc[-1].get('備考', ''))
+                        if "度外視可能" in last_note:
+                            score += 5
+                            factors.append("前走度外視可能見直し(+5)")
+
                 # 血統・特注ロジック
                 is_road = "ロード" in str(h['馬主'])
                 is_kanaloa_blood = ("カナロア" in str(h['タイプ'])) or ("カナロア" in str(h['母父']))
