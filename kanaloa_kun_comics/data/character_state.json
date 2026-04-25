@@ -1,0 +1,30 @@
+{
+  "series_name": "カナロアAI 4コマ",
+  "current_episode": 1,
+  "current_phase": "Phase 1: 誤解期",
+  "senpai": {
+    "gambler_energy": 95,
+    "investor_mind": 5,
+    "self_control": 5,
+    "learning_level": 0,
+    "known_lessons": [],
+    "recurring_weaknesses": [
+      "A判定を確勝と誤解する",
+      "次走狙いを無条件買いと誤解する",
+      "度外視可能を買いサインと誤解する",
+      "オッズを見る前に盛り上がる",
+      "見送りを負けだと思う"
+    ],
+    "growth_notes": []
+  },
+  "kanaloa_kun": {
+    "role": "期待値と資金管理を教える冷静なAI馬",
+    "tone": "やさしいが鋭い",
+    "final_line_style": "短く本質を突く"
+  },
+  "analyst": {
+    "role": "読者目線の慎重な分析者",
+    "tone": "真面目で少し慌てる",
+    "function": "AI診断と先輩へのツッコミ"
+  }
+}
