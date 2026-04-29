@@ -1,719 +1,975 @@
-import streamlit as st
+"""Streamlit MVP for Kanaloa Investor Game."""
+
+from __future__ import annotations
+
+import base64
+import html
+from datetime import date
+from pathlib import Path
+
 import pandas as pd
-import re
-import os
-import math
-import numpy as np
-from datetime import datetime
+import streamlit as st
 
-# ======================================================
-# 🚀 1. ページ構成・UI設定
-# ======================================================
-st.set_page_config(page_title="Kanaloa AI Pro Ver13.5", layout="wide")
+from achievements import achievement_catalog, achievement_progress, update_achievements
+from data_manager import (
+    ensure_data_files,
+    load_achievements,
+    load_player_status,
+    load_race_log,
+    reset_training_data,
+)
+from game_engine import add_race_decision, evaluate_race, update_player_status
+from scoring import get_next_rank_progress
 
-st.markdown("""
-    <style>
-    .main { background-color: #f8f9fa; }
-    .stButton>button { border-radius: 8px; font-weight: bold; background-color: #28a745; color: white; height: 3em; }
-    .stTabs [aria-selected="true"] { background-color: #007bff !important; color: white !important; }
-    div[data-testid="stExpander"] { background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
 
-st.title("🏇 Kanaloa AI Pro Ver13.5")
-st.caption(f"システム稼働時刻: {datetime.now().strftime('%Y/%m/%d %H:%M')} | 物理条件・前後バイアス完成版")
+st.set_page_config(page_title="カナロア投資道場", layout="wide")
 
-# ======================================================
-# ⚙️ 2. 設定・データヒーリング機能
-# ======================================================
-HISTORY_FILE = 'kanaloa_investment_log.csv'
 
-REQUIRED_COLUMNS = [
-    '日付', '場', 'レース名', '馬名', '馬主', '投資判定', '予想期待値', '複勝期待値',
-    '推奨額', '適用要素', '人気ランク', '単勝オッズ', '複勝オッズ',
-    '厩舎', '騎手', '着順', '単勝払戻', '複勝払戻', '備考'
-]
-
-base_weights = {
-    "父カナロア": 20, "母父カナロア": 15, "黄金A(ディープ)": 35,
-    "黄金B(クロフネ)": 30, "黄金C(ダイワメジャー)": 5,
-    "梅田智之": 15, "安田翔伍": 15, "本田優": 15, "手塚貴久": 15,
-    "西村淳也": 20, "岩田望来": 20, "横山和生": 15, "松若風馬": 15,
-    "テンP15": 20, "テンP30": 8, "上がりP15": 15, "内枠ボーナス": 8, "短縮ショック": 15
+GRADE_LABELS = {
+    "A": "勝負候補",
+    "B": "監視候補",
+    "C": "見送り候補",
 }
 
-NICK_SCORES = {
-    ("キタサンブラック", "芝"): 40,
-    ("オルフェーヴル", "芝"): 35,
-    ("ミッキーアイル", "ダート"): 45,
-    ("ジャスタウェイ", "ダート"): 50,
-    ("リアルスティール", "ダート"): -50
+DECISION_LABELS = {
+    "Buy": "購入",
+    "Skip": "見送り",
+    "購入": "購入",
+    "見送り": "見送り",
 }
 
-def load_history():
-    if os.path.exists(HISTORY_FILE) and os.path.getsize(HISTORY_FILE) > 0:
-        try:
-            df = pd.read_csv(HISTORY_FILE)
-        except Exception:
-            return pd.DataFrame(columns=REQUIRED_COLUMNS)
+EMOTION_LABELS = {
+    "Calm": "冷静",
+    "Excited": "興奮",
+    "Chasing Losses": "取り返したい",
+    "Fearful": "不安",
+    "冷静": "冷静",
+    "興奮": "興奮",
+    "取り返したい": "取り返したい",
+    "不安": "不安",
+}
 
-        modified = False
-        for col in REQUIRED_COLUMNS:
-            if col not in df.columns:
-                if col in ['馬主', '人気ランク', '厩舎', '騎手', '備考']:
-                    df[col] = "未設定"
-                elif any(x in col for x in ['期待値', '推奨額', '払戻', 'オッズ']):
-                    df[col] = 0.0
-                else:
-                    df[col] = ""
-                modified = True
+SCORE_LABELS = {
+    "skip_skill": "見送り力",
+    "rule_discipline": "ルール遵守力",
+    "expected_value_judgment": "期待値判断力",
+    "bankroll_stability": "資金管理力",
+    "emotional_control": "感情コントロール力",
+    "reflection_consistency": "振り返り力",
+}
 
-        if modified:
-            try:
-                df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-            except Exception:
-                pass
-        return df
+# Place optional character images here. The app falls back to icons if missing.
+CHARACTERS = {
+    "senpai": {
+        "name": "先輩",
+        "icon": "🔥",
+        "image": "assets/characters/senpai.png",
+    },
+    "analyst": {
+        "name": "分析者",
+        "icon": "📊",
+        "image": "assets/characters/analyst.png",
+    },
+    "kanaloa": {
+        "name": "カナロア君",
+        "icon": "🐴",
+        "image": "assets/characters/kanaloa.png",
+    },
+}
 
-    return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-def save_history(df):
-    try:
-        df.to_csv(HISTORY_FILE, index=False, encoding='utf-8-sig')
-    except Exception:
-        st.error("⚠️ 保存失敗: CSVが別のアプリで開かれている可能性があります。")
+def apply_layout_style() -> None:
+    """Keep the dashboard readable without adding heavy UI complexity."""
+    st.markdown(
+        """
+        <style>
+        [data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            border-radius: 8px;
+            padding: 14px 16px;
+            min-height: 104px;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 0.95rem;
+            color: #555555;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 1.45rem;
+            white-space: normal;
+            line-height: 1.25;
+        }
+        .rank-card {
+            background: #f7fbff;
+            border: 1px solid #dbeafe;
+            border-radius: 8px;
+            padding: 16px 18px;
+            margin: 8px 0 18px;
+        }
+        .rank-label {
+            color: #475569;
+            font-size: 0.95rem;
+            margin-bottom: 4px;
+        }
+        .rank-value {
+            color: #0f172a;
+            font-size: 1.9rem;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .rank-progress {
+            border-top: 1px solid #dbeafe;
+            color: #334155;
+            line-height: 1.7;
+            margin-top: 12px;
+            padding-top: 10px;
+        }
+        .rank-progress-title {
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .training-card {
+            background: linear-gradient(180deg, #fffaf0 0%, #ffffff 100%);
+            border: 1px solid #e8c36a;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(124, 74, 3, 0.08);
+            padding: 20px 22px;
+            margin: 16px 0 20px;
+        }
+        .training-title {
+            color: #7c4a03;
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        .training-section {
+            color: #475569;
+            font-size: 0.9rem;
+            font-weight: 700;
+            margin-top: 12px;
+            margin-bottom: 4px;
+        }
+        .training-text {
+            color: #111827;
+            line-height: 1.65;
+        }
+        .skill-list {
+            color: #0f172a;
+            font-weight: 700;
+            line-height: 1.8;
+            margin: 4px 0 8px;
+        }
+        .comment-block {
+            background: #f8fafc;
+            border-left: 4px solid #93c5fd;
+            border-radius: 6px;
+            margin-top: 8px;
+            padding: 10px 12px;
+        }
+        .achievement-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 8px 0 18px;
+        }
+        .achievement-badge {
+            background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
+            border: 1px solid #fb923c;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(154, 52, 18, 0.08);
+            color: #7c2d12;
+            font-weight: 700;
+            padding: 10px 12px;
+        }
+        .locked-achievement {
+            border-bottom: 1px solid #e5e7eb;
+            color: #64748b;
+            line-height: 1.7;
+            padding: 10px 0;
+        }
+        .locked-title {
+            color: #334155;
+            font-weight: 700;
+        }
+        .character-icon-fallback {
+            font-size: 3.5rem;
+            line-height: 1;
+            text-align: center;
+        }
+        .character-talk-card {
+            display: block;
+            margin: 6px 0;
+            width: 100%;
+        }
+        .character-header {
+            align-items: center;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 6px;
+            text-align: center;
+        }
+        .character-portrait {
+            align-items: center;
+            display: flex;
+            justify-content: center;
+            min-height: 108px;
+            width: 100%;
+            overflow: visible;
+        }
+        .character-portrait img {
+            display: block;
+            height: 108px;
+            max-width: 108px;
+            object-fit: contain;
+            width: 100%;
+        }
+        .character-name {
+            color: #334155;
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin: 0;
+            white-space: nowrap;
+        }
+        .speech-bubble {
+            border: 1px solid #dbe3ef;
+            border-radius: 14px;
+            box-sizing: border-box;
+            color: #111827;
+            font-size: 1rem;
+            line-height: 1.75;
+            margin: 0 auto;
+            max-width: 100%;
+            padding: 13px 15px;
+            position: relative;
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: break-word;
+            width: 100%;
+        }
+        .speech-bubble::before {
+            border-bottom: 12px solid #dbe3ef;
+            border-left: 9px solid transparent;
+            border-right: 9px solid transparent;
+            content: "";
+            left: 50%;
+            position: absolute;
+            top: -12px;
+            transform: translateX(-50%);
+        }
+        .speech-bubble::after {
+            border-bottom: 11px solid #ffffff;
+            border-left: 8px solid transparent;
+            border-right: 8px solid transparent;
+            content: "";
+            left: 50%;
+            position: absolute;
+            top: -10px;
+            transform: translateX(-50%);
+        }
+        .speech-senpai {
+            background: #fff7ed;
+            border-color: #fdba74;
+        }
+        .speech-senpai::before {
+            border-bottom-color: #fdba74;
+        }
+        .speech-senpai::after {
+            border-bottom-color: #fff7ed;
+        }
+        .speech-analyst {
+            background: #f0f9ff;
+            border-color: #93c5fd;
+        }
+        .speech-analyst::before {
+            border-bottom-color: #93c5fd;
+        }
+        .speech-analyst::after {
+            border-bottom-color: #f0f9ff;
+        }
+        .speech-kanaloa {
+            background: #f0fdf4;
+            border-color: #86efac;
+        }
+        .speech-kanaloa::before {
+            border-bottom-color: #86efac;
+        }
+        .speech-kanaloa::after {
+            border-bottom-color: #f0fdf4;
+        }
+        @media (max-width: 640px) {
+            .character-portrait img {
+                height: 94px;
+                max-width: 86px;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-def get_adaptive_weights():
-    weights = base_weights.copy()
-    df_h = load_history()
-    if df_h.empty:
-        return weights
 
-    try:
-        df_h['着順_num'] = pd.to_numeric(df_h['着順'], errors='coerce')
-        for f in weights.keys():
-            pat = f"(?<!母){re.escape(f)}" if f == "父カナロア" else re.escape(f)
-            rel = df_h[df_h['適用要素'].astype(str).str.contains(pat, na=False, regex=True)].dropna(subset=['着順_num'])
-            if len(rel) >= 5:
-                hit_rate = (rel['着順_num'] <= 3).mean()
-                adj = max(0.4, min(1.6, hit_rate / 0.25))
-                weights[f] = int(round(weights[f] * adj))
-    except Exception:
-        pass
+def format_grade(grade: object) -> str:
+    """Show A/B/C grades with Japanese training labels."""
+    grade_text = str(grade)
+    return f"{grade_text}：{GRADE_LABELS.get(grade_text, grade_text)}"
 
-    return weights
 
-# ======================================================
-# 🎥 3. 映像評価ロジック
-# ======================================================
-def get_movie_score(h, r_track, r_dist):
-    score = 0
-    factors = []
+def localize_log(log: pd.DataFrame) -> pd.DataFrame:
+    """Return a Japanese-labeled copy of the decision log for display."""
+    if log.empty:
+        return log
 
-    bad_list = h.get('映像不利', [])
-    movie_judge = h.get('映像判定', '標準')
-    movie_good = h.get('映像好走', False)
+    display_log = log.copy()
+    display_log["ai_grade"] = display_log["ai_grade"].map(
+        lambda grade: format_grade(grade)
+    )
+    display_log["decision"] = display_log["decision"].map(
+        lambda decision: DECISION_LABELS.get(decision, decision)
+    )
+    display_log["emotional_state"] = display_log["emotional_state"].map(
+        lambda emotion: EMOTION_LABELS.get(emotion, emotion)
+    )
 
-    # 1. 加点ロジック
-    if movie_good:
-        score += 20
-        factors.append("不利なし好走(+20)")
+    column_labels = {
+        "date": "日付",
+        "race_name": "レース名",
+        "ai_grade": "AI判定",
+        "decision": "判断",
+        "confidence": "自信度",
+        "emotional_state": "感情状態",
+        "recommended_bet": "推奨購入額",
+        "actual_bet": "実際の購入額",
+        "result_amount": "払戻額",
+        "profit_loss": "損益",
+        "bankroll_before": "レース前資金",
+        "odds": "単勝オッズ",
+        "estimated_edge": "推定エッジ（%）",
+        "thesis": "期待値の根拠メモ",
+        "ai_reason": "AIコメント",
+        "reflection": "振り返りメモ",
+    }
+    return display_log.rename(columns=column_labels)
 
-    if movie_judge == "度外視可能":
-        score += 10
-        factors.append("度外視可能(+10)")
-    elif movie_judge == "次走狙い":
-        score += 20
-        factors.append("次走狙い(+20)")
-    elif movie_judge == "低評価激走":
-        score += 15
-        factors.append("低評価激走(+15)")
 
-    if movie_good and movie_judge == "次走狙い":
-        score += 10
-        factors.append("映像シナジー(+10)")
+def character_image_path(character_key: str) -> Path | None:
+    """Return a character image path when the file exists."""
+    image_path = Path(CHARACTERS[character_key]["image"])
+    return image_path if image_path.exists() else None
 
-    # 2. 保存用タグ
-    for tag in ["前壁", "外回し", "砂被り", "馬群嫌がる", "出遅れ", "前走展開不利"]:
-        if tag in bad_list:
-            factors.append(tag)
 
-    # 3. 再現リスク減点
-    if "外回し" in bad_list and r_track == "芝" and r_dist >= 1800:
-        score -= 10
-        factors.append("外回し継続リスク(-10)")
+def character_image_data_uri(character_key: str) -> str | None:
+    """Return a base64 data URI for a character image when available."""
+    image_path = character_image_path(character_key)
+    if image_path is None:
+        return None
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
-    if "砂被り" in bad_list and r_track == "ダート":
-        score -= 8
-        factors.append("砂被り適性不安(-8)")
 
-    if "馬群嫌がる" in bad_list:
-        score -= 10
-        factors.append("馬群耐性不安(-10)")
+def render_character_comment(character_key: str, comment: str) -> None:
+    """Render one character comment with image fallback."""
+    character = CHARACTERS[character_key]
+    image_uri = character_image_data_uri(character_key)
+    safe_name = html.escape(character["name"])
+    safe_comment = html.escape(comment)
+    safe_icon = html.escape(character["icon"])
 
-    return score, factors
-
-# ======================================================
-# 💰 4. 投資計算エンジン
-# ======================================================
-def calculate_investment(ai_score, popular_rank, odds, f_odds, top_odds, bankroll, head_count):
-    if head_count <= 10 or odds <= 0.0:
-        return 0.0, 0.0, 0.0, 0
-
-    if top_odds >= 4.0:
-        d_rate = {"A": 0.22, "B": 0.13, "C": 0.10, "D": 0.07, "E": 0.04}
-    elif top_odds <= 2.2:
-        d_rate = {"A": 0.38, "B": 0.15, "C": 0.06, "D": 0.02, "E": 0.01}
+    if image_uri:
+        portrait_html = f'<img src="{image_uri}" alt="{safe_name}">'
     else:
-        d_rate = {"A": 0.31, "B": 0.18, "C": 0.10, "D": 0.05, "E": 0.02}
-
-    final_prob = min(d_rate.get(popular_rank, 0.02) * (ai_score / 100.0), 0.50)
-    true_ev = (final_prob * odds) * 100
-
-    multiplier = 2.9 if head_count >= 16 else 2.5
-    place_prob = min(final_prob * multiplier, 0.92)
-    place_ev = (place_prob * f_odds) * 100 if f_odds > 0 else 0
-
-    edge = (final_prob * odds) - 1.0
-    if edge > 0 and odds > 1.0:
-        bet = int(min(bankroll * (edge / (odds - 1.0)) * 0.5, bankroll * 0.05) // 100) * 100
-    else:
-        bet = 0
-
-    return final_prob, true_ev, place_ev, bet
-
-# ======================================================
-# 💻 5. メインUI
-# ======================================================
-with st.sidebar:
-    st.header("📋 レース基本情報")
-    r_date = st.date_input("日付").strftime('%Y/%m/%d')
-    r_place = st.selectbox("場", ["中山", "東京", "京都", "阪神", "中京", "新潟", "福島", "小倉", "札幌", "函館"])
-    r_num = st.text_input("レース名", "11R")
-    r_track = st.radio("トラック", ["芝", "ダート"])
-    r_dist = st.number_input("距離", value=1600, step=100)
-    r_heads = st.number_input("頭数", value=16, min_value=1)
-    bank_total = st.number_input("軍資金", value=100000)
-    st.divider()
-    top_odds = st.number_input("1番人気オッズ", value=3.5, step=0.1)
-    t15_c = st.number_input("テンP15頭数", 0, 10, 0)
-    t30_c = st.number_input("テンP30頭数", 0, 10, 0)
-
-    # ------------------------------------------------------
-    # 🚩 当日バイアス
-    # ------------------------------------------------------
-    st.divider()
-    st.subheader("🏁 当日バイアス")
-    r_speed = st.selectbox("馬場速度", ["超高速", "高速", "標準", "タフ", "極悪"], index=2)
-    bias_inout = st.select_slider("内外バイアス", options=["内有利", "やや内", "フラット", "やや外", "外有利"], value="フラット")
-    bias_front = st.select_slider("前後バイアス", options=["前有利", "やや前", "フラット", "やや差", "差有利"], value="フラット")
-
-is_small_race = r_heads <= 10
-pace_val = (t15_c * 2) + t30_c
-p_adj, p_lbl = ((-25, "🔥 ハイ") if pace_val >= 7 else (20, "💤 スロー") if pace_val <= 2 else (0, "☁️ 平均"))
-
-tab1, tab2, tab3 = st.tabs(["🏇 AI診断・入力", "✅ 結果入力", "📈 資産・詳細分析"])
-
-# ======================================================
-# --- Tab 1: AI診断 ---
-# ======================================================
-with tab1:
-    if is_small_race:
-        st.warning("⚠️ 10頭以下のレースは自動的にC判定（除外）となります")
-
-    st.info(f"展開判定: {p_lbl} (補正: {p_adj}pt)")
-
-    if 'h_count' not in st.session_state:
-        st.session_state.h_count = 1
-
-    user_inputs = []
-
-    for i in range(st.session_state.h_count):
-        with st.expander(f"🐴 馬 {i+1}", expanded=True):
-            c1, c2, c3, c4, c5 = st.columns(5)
-            name = c1.text_input("馬名", key=f"n_{i}")
-            owner = c2.text_input("馬主", key=f"ow_{i}")
-            typ = c3.selectbox("タイプ", ["父カナロア", "母父カナロア", "次世代評価"], key=f"t_{i}")
-            sex = c4.selectbox("性別", ["牡", "牝", "セ"], key=f"s_{i}")
-            p_dist = c5.number_input("前走距離", value=1600, key=f"pd_{i}")
-
-            c6, c7, c8, c9 = st.columns(4)
-            waku = c6.number_input("枠", 1, 8, key=f"w_{i}")
-            jock = c7.text_input("騎手", key=f"j_{i}")
-            trai = c8.text_input("厩舎", key=f"tr_{i}")
-            msire = c9.text_input("母父(父)", key=f"mf_{i}")
-
-            c10, c11, c12, c13, c14 = st.columns(5)
-            rank = c10.selectbox("人気", ["A", "B", "C", "D", "E"], index=2, key=f"r_{i}")
-            odds = c11.number_input("単勝", value=10.0, key=f"o_{i}")
-            f_odds = c12.number_input("複勝", value=3.0, key=f"f_{i}")
-            tp = c13.selectbox("テンP", ["なし", "15", "30", "50"], key=f"tp_{i}")
-            up = c14.selectbox("上がりP", ["なし", "15", "30"], key=f"up_{i}")
-
-            st.markdown("##### 📈 成長サイン")
-            c15, c16, c17 = st.columns(3)
-            g1 = c15.checkbox("①馬体重+10kg or 過去最高", key=f"g1_{i}")
-            g2 = c16.checkbox("②時計自己ベスト更新", key=f"g2_{i}")
-            g3 = c17.checkbox("③厩舎コメント成長示唆", key=f"g3_{i}")
-
-            st.markdown("##### 🎥 映像評価")
-            c18, c19, c20 = st.columns(3)
-            movie_good = c18.checkbox("不利なし好走", key=f"mv_good_{i}")
-            movie_bad = c19.multiselect(
-                "不利内容",
-                ["前壁", "外回し", "砂被り", "馬群嫌がる", "出遅れ", "前走展開不利"],
-                key=f"mv_bad_{i}"
-            )
-            movie_judge = c20.selectbox(
-                "総合判定",
-                ["標準", "度外視可能", "次走狙い", "低評価激走"],
-                key=f"mv_judge_{i}"
-            )
-
-            if name:
-                user_inputs.append({
-                    '名前': name,
-                    '馬主': owner,
-                    'タイプ': typ,
-                    '性別': sex,
-                    '前走距離': p_dist,
-                    '枠': waku,
-                    '騎手': jock,
-                    '厩舎': trai,
-                    '母父': msire,
-                    '人気': rank,
-                    '単勝': odds,
-                    '複勝': f_odds,
-                    'tp': tp,
-                    'up': up,
-                    'g1': g1,
-                    'g2': g2,
-                    'g3': g3,
-                    '映像好走': movie_good,
-                    '映像不利': movie_bad,
-                    '映像判定': movie_judge
-                })
-
-    st.button("➕ 馬を追加", on_click=lambda: st.session_state.update({"h_count": st.session_state.h_count + 1}))
-
-    if st.button("🚀 AI診断実行", type="primary", use_container_width=True):
-        if not user_inputs:
-            st.warning("データを入力してください")
-        else:
-            weights = get_adaptive_weights()
-            df_old = load_history()
-            new_recs = []
-
-            for h in user_inputs:
-                score = 80
-                factors = [h['タイプ']]
-
-                # 同馬の前走（今回より前の日付で最新）の備考に「度外視可能」があれば見直し加点
-                horse_hist = df_old[df_old['馬名'].astype(str) == str(h['名前'])].copy()
-                if not horse_hist.empty:
-                    horse_hist['日付_dt'] = pd.to_datetime(horse_hist['日付'], errors='coerce')
-                    current_dt = pd.to_datetime(r_date, errors='coerce')
-                    prev_hist = horse_hist[horse_hist['日付_dt'] < current_dt].sort_values('日付_dt')
-                    if not prev_hist.empty:
-                        last_note = str(prev_hist.iloc[-1].get('備考', ''))
-                        if "度外視可能" in last_note:
-                            score += 5
-                            factors.append("前走度外視可能見直し(+5)")
-
-                # 血統・特注ロジック
-                is_road = "ロード" in str(h['馬主'])
-                is_kanaloa_blood = ("カナロア" in str(h['タイプ'])) or ("カナロア" in str(h['母父']))
-
-                if is_road and r_track == "ダート" and is_kanaloa_blood:
-                    if h['性別'] in ["牡", "セ"]:
-                        score += 20
-                        factors.append("ロード×カナロア(牡/セ)ダート(+20)")
-                    elif h['性別'] == "牝":
-                        score += 10
-                        factors.append("ロード×カナロア(牝)ダート(+10)")
-
-                for (sire, track), bonus in NICK_SCORES.items():
-                    if sire in str(h['母父']) and track in r_track:
-                        score += bonus
-                        factors.append(f"血統特注({bonus})")
-
-                if h['前走距離'] > r_dist:
-                    score += weights.get("短縮ショック", 15)
-                    factors.append("短縮ショック")
-
-                # 展開・脚質
-                if h['tp'] == "15":
-                    score += weights.get("テンP15", 20) + p_adj
-                    factors.append("テンP15")
-                    if h['枠'] <= 3:
-                        score += weights.get("内枠ボーナス", 8)
-                        factors.append("内枠ボーナス")
-                    if p_adj > 0:
-                        factors.append(f"逃げ有利(+{p_adj}pt)")
-                    elif p_adj < 0:
-                        factors.append(f"逃げ不利({p_adj}pt)")
-                    else:
-                        factors.append("逃げ(展開平均)")
-
-                elif h['tp'] == "30":
-                    score += weights.get("テンP30", 8) + int(p_adj / 2)
-                    factors.append("テンP30")
-                    if p_adj > 0:
-                        factors.append(f"先行有利(+{int(p_adj/2)}pt)")
-                    elif p_adj < 0:
-                        factors.append(f"先行不利({int(p_adj/2)}pt)")
-                    else:
-                        factors.append("先行(展開平均)")
-
-                elif h['tp'] == "50":
-                    if p_adj < 0:
-                        score += int(abs(p_adj) / 2)
-                        factors.append(f"差し有利(+{int(abs(p_adj)/2)}pt)")
-
-                if r_track == "芝" and h['up'] == '15':
-                    score += weights.get("上がりP15", 15)
-                    factors.append("上がりP15")
-                    if p_adj < 0:
-                        score += int(abs(p_adj) / 2)
-                        factors.append(f"豪脚有利(+{int(abs(p_adj)/2)}pt)")
-                    else:
-                        factors.append("豪脚(通常)")
-
-                # 黄金血統
-                if "ディープ" in str(h['母父']) and r_track == "芝":
-                    score += weights.get("黄金A(ディープ)", 35)
-                    factors.append("黄金A(ディープ)")
-                if "クロフネ" in str(h['母父']) and r_track == "ダート":
-                    score += weights.get("黄金B(クロフネ)", 30)
-                    factors.append("黄金B(クロフネ)")
-                if "ダイワメジャー" in str(h['母父']):
-                    score += weights.get("黄金C(ダイワメジャー)", 5)
-                    factors.append("黄金C(ダイワメジャー)")
-
-                # 騎手・厩舎
-                for k in weights.keys():
-                    if k in str(h['騎手']) or k in str(h['厩舎']):
-                        score += weights[k]
-                        factors.append(k)
-
-                # 特殊減点
-                if "カナロア" in str(h['タイプ']) and h['性別'] == "牝" and r_track == "ダート" and r_dist >= 1700:
-                    score -= 25
-                    factors.append("カナ牝ダ中距離(-25)")
-
-                # ------------------------------------------------------
-                # 🚩 物理条件・前後バイアス補正（完成版）
-                # ------------------------------------------------------
-                bias_penalty = 0
-
-                is_high_speed = r_speed in ["超高速", "高速"]
-                is_inner_fav = bias_inout in ["内有利", "やや内"]
-                is_outer_fav = bias_inout in ["外有利", "やや外"]
-                is_front_fav = bias_front in ["前有利", "やや前"]
-                is_closer_fav = bias_front in ["差有利", "やや差"]
-
-                # ① 高速馬場 × 内有利 → 外枠不利
-                if is_high_speed and is_inner_fav:
-                    if h['枠'] >= 7:
-                        bias_penalty -= 5
-                        factors.append("高速・内有利×外枠(-5)")
-                    elif h['枠'] <= 3:
-                        bias_penalty += 3
-                        factors.append("高速・内有利×内枠(+3)")
-
-                # ② 高速馬場 × 外有利 → 内枠やや不利
-                if is_high_speed and is_outer_fav:
-                    if h['枠'] <= 3:
-                        bias_penalty -= 3
-                        factors.append("高速・外有利×内枠(-3)")
-                    elif h['枠'] >= 7:
-                        bias_penalty += 3
-                        factors.append("高速・外有利×外枠(+3)")
-
-                # ③ 前後バイアス × 脚質補正
-                # tp: 15=逃げ, 30=先行, 50=差し
-                if is_front_fav:
-                    if h['tp'] == "15":
-                        bias_penalty += 5
-                        factors.append("前有利×逃げ(+5)")
-                    elif h['tp'] == "30":
-                        bias_penalty += 3
-                        factors.append("前有利×先行(+3)")
-                    elif h['tp'] == "50":
-                        bias_penalty -= 5
-                        factors.append("前有利×差し(-5)")
-
-                if is_closer_fav:
-                    if h['tp'] == "15":
-                        bias_penalty -= 5
-                        factors.append("差し有利×逃げ(-5)")
-                    elif h['tp'] == "30":
-                        bias_penalty -= 3
-                        factors.append("差し有利×先行(-3)")
-                    elif h['tp'] == "50":
-                        bias_penalty += 5
-                        factors.append("差し有利×差し(+5)")
-
-                # ④ 映像不利とのシナジー
-                movie_bad_list = h.get('映像不利', [])
-
-                if is_high_speed and is_inner_fav and "外回し" in movie_bad_list:
-                    bias_penalty -= 10
-                    factors.append("高速・内有利×外回し(-10)")
-
-                if is_front_fav and "前走展開不利" in movie_bad_list and h['tp'] == "15":
-                    bias_penalty += 5
-                    factors.append("前有利×前走展開不利見直し(+5)")
-
-                if is_closer_fav and "前走展開不利" in movie_bad_list and h['tp'] == "50":
-                    bias_penalty += 5
-                    factors.append("差し有利×前走展開不利見直し(+5)")
-
-                # ⑤ 暴走防止
-                bias_penalty = max(-15, min(10, bias_penalty))
-
-                score += bias_penalty
-
-                # バイアス情報も因子として保存
-                factors.append(f"速度:{r_speed}")
-                factors.append(f"内外:{bias_inout}")
-                factors.append(f"前後:{bias_front}")
-
-                # 映像評価ブロック
-                movie_score, movie_factors = get_movie_score(h, r_track, r_dist)
-                score += movie_score
-                factors.extend(movie_factors)
-
-                # 成長・人気ブースト
-                multiplier = 1.0
-                growth_count = sum([h['g1'], h['g2'], h['g3']])
-
-                if growth_count >= 2:
-                    multiplier *= 1.10
-                    factors.append("成長ブースト")
-                elif growth_count == 1:
-                    multiplier *= 1.03
-                    factors.append("成長気配")
-
-                if h['人気'] in ["C", "D", "E"]:
-                    multiplier *= 1.10
-                    factors.append("穴馬ブースト")
-
-                if "不利なし好走(+20)" in movie_factors and growth_count >= 2:
-                    multiplier *= 1.08
-                    factors.append("映像×成長シナジー")
-
-                multiplier = min(multiplier, 1.45)
-                final_score = int(80 + ((score - 80) * multiplier))
-
-                prob, w_ev, p_ev, bet = calculate_investment(
-                    final_score, h['人気'], h['単勝'], h['複勝'], top_odds, bank_total, r_heads
-                )
-
-                if is_small_race:
-                    judge = "C (少頭数除外)"
-                else:
-                    judge = "A" if p_ev >= 115 and w_ev >= 125 else "B" if w_ev >= 110 else "C"
-
-                st.write(f"### {h['名前']} [{judge}] 期待値: 単{w_ev:.1f}% / 複{p_ev:.1f}%")
-                st.caption(
-                    f"馬主: {h['馬主']} | "
-                    f"スコア詳細: 基礎80 + 補正{score-80} × 乗算{multiplier:.2f}倍 = 最終 {final_score}pt | "
-                    f"適用要素: {', '.join(factors)}"
-                )
-
-                if bet > 0:
-                    st.success(f"推奨投資額: ¥{bet:,} (単複各 ¥{bet//2:,} を推奨)")
-
-                bias_note = f"【速度:{r_speed}】【内外:{bias_inout}】【前後:{bias_front}】"
-                old_note_series = df_old.loc[
-                    (df_old['日付'].astype(str) == str(r_date)) & (df_old['馬名'].astype(str) == str(h['名前'])),
-                    '備考'
-                ]
-                old_note = "" if old_note_series.empty else str(old_note_series.iloc[-1]).replace('nan', '')
-                cleaned_old_note = re.sub(r'【(?:速度|内外|前後):[^】]*】', '', old_note).strip()
-                merged_note = f"{bias_note}{cleaned_old_note}" if cleaned_old_note else bias_note
-
-                new_recs.append({
-                    '日付': r_date,
-                    '場': r_place,
-                    'レース名': r_num,
-                    '馬名': h['名前'],
-                    '馬主': h['馬主'],
-                    '投資判定': judge,
-                    '予想期待値': w_ev,
-                    '複勝期待値': p_ev,
-                    '推奨額': bet,
-                    '適用要素': "|".join(factors),
-                    '人気ランク': h['人気'],
-                    '単勝オッズ': h['単勝'],
-                    '複勝オッズ': h['複勝'],
-                    '厩舎': h['厩舎'],
-                    '騎手': h['騎手'],
-                    '着順': "",
-                    '単勝払戻': 0,
-                    '複勝払戻': 0,
-                    '備考': merged_note
-                })
-
-            save_history(
-                pd.concat([df_old, pd.DataFrame(new_recs)], ignore_index=True)
-                .drop_duplicates(subset=['日付', '馬名'], keep='last')
-            )
-            st.success("ログ保存完了。分析タブで確認してください。")
-
-# ======================================================
-# --- Tab 2: 結果入力 ---
-# ======================================================
-with tab2:
-    df_res = load_history()
-
-    if df_res.empty:
-        st.info("データがありません")
-    else:
-        pending = df_res[df_res['着順'].astype(str).str.strip().isin(["", "未設定", "nan"])].copy()
-
-        if pending.empty:
-            st.success("全結果入力済みです")
-        else:
-            sel = st.selectbox("結果を入力する馬を選択", pending['馬名'].unique())
-            idx = df_res[df_res['馬名'] == sel].index[-1]
-
-            with st.form("res_input"):
-                c1, c2, c3 = st.columns(3)
-                r_f = c1.number_input("確定着順", 1, 18, 1)
-                w_f = c2.number_input("単勝払戻金", 0, 100000, 0)
-                f_f = c3.number_input("複勝払戻金", 0, 10000, 0)
-                new_note = st.text_area("備考（度外視、好内容など）", value=str(df_res.at[idx, '備考']).replace('nan', ''))
-
-                if st.form_submit_button("結果を保存する"):
-                    df_res.at[idx, '着順'] = str(r_f)
-                    df_res.at[idx, '単勝払戻'] = w_f
-                    df_res.at[idx, '複勝払戻'] = f_f
-                    df_res.at[idx, '備考'] = new_note
-                    save_history(df_res)
-                    st.success(f"{sel} の結果を保存しました")
-                    st.rerun()
-
-# ======================================================
-# --- Tab 3: 資産・詳細分析 ---
-# ======================================================
-with tab3:
-    df_anl = load_history()
-
-    if not df_anl.empty:
-        df_anl['着順_num'] = pd.to_numeric(df_anl['着順'], errors='coerce')
-        df_ok = df_anl.dropna(subset=['着順_num']).copy()
-
-        if not df_ok.empty:
-            st.header("📈 資産運用ステータス")
-            df_ok['投資'] = pd.to_numeric(df_ok['推奨額'], errors='coerce').fillna(0)
-            df_ok['単勝払戻'] = pd.to_numeric(df_ok['単勝払戻'], errors='coerce').fillna(0)
-            df_ok['複勝払戻'] = pd.to_numeric(df_ok['複勝払戻'], errors='coerce').fillna(0)
-            df_ok['回収'] = (df_ok['単勝払戻'] * (df_ok['投資'] / 200) + df_ok['複勝払戻'] * (df_ok['投資'] / 200))
-
-            invest_total = df_ok['投資'].sum()
-            return_total = df_ok['回収'].sum()
-
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("トータル損益", f"¥{int(return_total - invest_total):,}")
-            total_recovery_str = f"{(return_total / invest_total * 100):.1f}%" if invest_total > 0 else "0.0%"
-            col_b.metric("累計回収率", total_recovery_str)
-            col_c.metric("勝負馬数", f"{len(df_ok)} 頭")
-
-        st.divider()
-
-        st.subheader("🔍 個別データ・エクスプローラー")
-        col_s1, col_s2 = st.columns(2)
-        search_name = col_s1.text_input("馬名・馬主・備考で検索 (空欄で全表示)")
-        filter_grade = col_s2.multiselect("判定で絞り込み", ["A", "B", "C", "C (少頭数除外)"], default=["A", "B", "C", "C (少頭数除外)"])
-        st.caption("例：アンチG / 速度:高速 / 内外:内有利 / 前後:前有利 / 外回し")
-        col_b1, col_b2, col_b3 = st.columns(3)
-        filter_speed = col_b1.selectbox("速度タグ", ["すべて", "超高速", "高速", "標準", "タフ", "極悪"])
-        filter_inout = col_b2.selectbox("内外タグ", ["すべて", "内有利", "やや内", "フラット", "やや外", "外有利"])
-        filter_front = col_b3.selectbox("前後タグ", ["すべて", "前有利", "やや前", "フラット", "やや差", "差有利"])
-
-        display_df = df_anl.copy()
-
-        if search_name:
-            s_word = search_name.strip()
-            display_df = display_df[
-                display_df['馬名'].astype(str).str.contains(s_word, na=False) |
-                display_df['馬主'].astype(str).str.contains(s_word, na=False) |
-                display_df['備考'].astype(str).str.contains(s_word, na=False)
+        portrait_html = f'<div class="character-icon-fallback">{safe_icon}</div>'
+
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <div class="character-talk-card">
+              <div class="character-header">
+                <div class="character-name">{safe_name}</div>
+                <div class="character-portrait">{portrait_html}</div>
+              </div>
+              <div class="speech-bubble speech-{character_key}">「{safe_comment}」</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_character_talk(comments: dict[str, str]) -> None:
+    """Render the three character comments vertically."""
+    for character_key in ["senpai", "analyst", "kanaloa"]:
+        if character_key in comments:
+            render_character_comment(character_key, comments[character_key])
+
+
+def get_pre_decision_character_comments(
+    ai_grade: str,
+    emotional_state: str,
+    confidence_level: int,
+    recommended_bet: float,
+) -> dict[str, str]:
+    """Return pre-decision comments based on the current race setup."""
+    if confidence_level <= 2:
+        return {
+            "senpai": "自信ないのに買うの、昔の俺すぎるな……。",
+            "analyst": "自信度が低い場合、期待値の見積もり誤差が大きくなります。無理に買う必要はありません。",
+            "kanaloa": "わからない時に見送れる人が、長期戦で残ります。",
+        }
+
+    if emotional_state == "取り返したい":
+        return {
+            "senpai": "次で取り返せば実質ノーダメ……って言いたいけど、それ毎回フラグなんだよな。",
+            "analyst": "前の損失を基準にすると、判断の独立性が崩れます。期待値ではなく感情で買いやすい状態です。",
+            "kanaloa": "今日は利益を取り返す日ではありません。ルールを守る日です。",
+        }
+
+    if ai_grade == "A":
+        return {
+            "senpai": "これは勝負候補だな！……でも調子に乗って張りすぎるなよ、俺。",
+            "analyst": "A判定です。根拠が揃っているなら、推奨額の範囲で検討できます。",
+            "kanaloa": "勝負する時も、資金管理が先です。大きく勝つより、崩れないことを優先しましょう。",
+        }
+    if ai_grade == "B":
+        return {
+            "senpai": "夢はあるけど、ちょっと迷うな……こういう時の“少しだけ”が怖いんだよな。",
+            "analyst": "B判定は監視候補です。期待値は残りますが、購入するなら小さく、迷うなら見送りが妥当です。",
+            "kanaloa": "見送っても機会損失とは限りません。資金を残せば、次の好機を待てます。",
+        }
+    return {
+        "senpai": "え、見送り？……でもここで無理に振ると、だいたいロクなことないんだよな。",
+        "analyst": "C判定です。根拠・自信度・感情面のどれかに不安があります。見送りは合理的です。",
+        "kanaloa": "ボール球を振らないことも、投資家の技術です。",
+    }
+
+
+def show_chasing_loss_warning() -> None:
+    """Show a training event when the user feels like chasing losses."""
+    st.warning("⚠️ 取り返したい日の罠")
+    with st.container(border=True):
+        st.markdown("**取り返したい日は、勝負の日ではありません。余白を守る日です。**")
+        render_character_talk(
+            {
+                "senpai": "次で取り返せば実質ノーダメだろ！……って言いたいけど、それ毎回フラグなんだよな。",
+                "analyst": "前の損失を基準にすると、判断の独立性が崩れます。期待値ではなく感情で買いやすい状態です。",
+                "kanaloa": "今日は利益を取り返す日ではありません。ルールを守る日です。見送れたなら、それは大きな勝利です。",
+            }
+        )
+
+
+def build_reflection_template(decision: str, emotional_state: str) -> str:
+    """Build a reflection note template from the current form choices."""
+    lines = [
+        "今日の判断：",
+        decision,
+        "",
+        "判断理由：",
+        "なぜ買う、または見送る判断をしたか：",
+        "",
+        "感情状態：",
+        emotional_state,
+        "",
+        "守れたルール：",
+        "推奨額を守れたか、見送り判断ができたか：",
+        "",
+    ]
+    if emotional_state == "取り返したい":
+        lines.extend(
+            [
+                "取り返したい衝動への対処：",
+                "今日、自分は衝動にどう対応したか：",
+                "",
             ]
+        )
+    lines.extend(
+        [
+            "次回への改善：",
+            "次に同じ場面が来たらどうするか：",
+        ]
+    )
+    return "\n".join(lines)
 
-        if filter_grade:
-            display_df = display_df[display_df['投資判定'].astype(str).isin(filter_grade)]
 
-        if filter_speed != "すべて":
-            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【速度:{filter_speed}】", na=False)]
+def build_training_result(
+    entry: dict[str, object],
+    evaluation: dict[str, object],
+    before_status: pd.Series,
+    after_status: pd.Series,
+    new_achievements: list[str],
+) -> dict[str, object]:
+    """Create the post-save game feedback card."""
+    decision = str(entry["decision"])
+    confidence = int(entry["confidence"])
+    actual_bet = float(entry["actual_bet"])
+    recommended_bet = float(entry["recommended_bet"])
+    emotional_state = str(entry["emotional_state"])
+    reflection = str(entry.get("reflection", "")).strip()
+    grade = str(evaluation["ai_grade"])
 
-        if filter_inout != "すべて":
-            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【内外:{filter_inout}】", na=False)]
+    if emotional_state == "取り返したい" and decision == "見送り":
+        action = "取り返したい衝動に勝ちました。これは今日もっとも価値のある判断です。"
+    elif emotional_state == "取り返したい" and decision == "購入" and actual_bet > recommended_bet:
+        action = "取り返したい日に推奨額を超えました。期待値より感情が強くなっていた可能性があります。"
+    elif grade == "C" and decision == "見送り":
+        action = "ボール球を見送りました。これは勝利と同じ価値のある判断です。"
+    elif grade == "B" and confidence <= 2 and decision == "見送り":
+        action = "期待値はありそうでも、決め手が弱い場面で余白を守れました。"
+    elif grade == "A" and decision == "購入" and actual_bet <= recommended_bet:
+        action = "勝負候補をルール内の金額で購入できました。"
+    elif decision == "購入" and actual_bet > recommended_bet:
+        action = "期待値があっても、資金管理を崩すと長期戦では危険です。"
+    elif decision == "見送り":
+        action = "迷いのあるレースで資金を守りました。長期戦では大切な判断です。"
+    else:
+        action = "購入判断を記録できました。次は結果よりもプロセスを振り返りましょう。"
 
-        if filter_front != "すべて":
-            display_df = display_df[display_df['備考'].astype(str).str.contains(f"【前後:{filter_front}】", na=False)]
-
-        safe_cols = [c for c in REQUIRED_COLUMNS if c in display_df.columns]
-        st.dataframe(display_df[safe_cols].sort_values('日付', ascending=False), use_container_width=True)
-
-        if not df_ok.empty:
-            st.divider()
-            st.subheader("📊 判定別 実績")
-            grade_stats = []
-
-            for g in ["A", "B", "C"]:
-                sub = df_ok[df_ok['投資判定'].astype(str).str.startswith(g)]
-                if len(sub) > 0:
-                    inv = sub['投資'].sum()
-                    rec = sub['回収'].sum()
-                    grade_stats.append({
-                        '判定': g,
-                        '件数': len(sub),
-                        '複勝率': f"{(sub['着順_num'] <= 3).mean() * 100:.1f}%",
-                        '回収率': f"{(rec / inv * 100):.1f}%" if inv > 0 else "0.0%"
-                    })
-
-            if grade_stats:
-                st.table(pd.DataFrame(grade_stats))
-
-            st.subheader("💡 因子別複勝パフォーマンス")
-            f_res = []
-
-            def extract_core_factor(factor_str):
-                cleaned = re.sub(r'\([+-]?\d+pt\)', '', str(factor_str))
-                cleaned = re.sub(r'\([+-]?\d+\)', '', cleaned)
-                return cleaned.strip()
-
-            df_ok['コア要素リスト'] = df_ok['適用要素'].astype(str).apply(
-                lambda x: [extract_core_factor(f) for f in x.split("|") if f.strip() and f.strip() != "nan"]
+    score_changes = []
+    for key, label in SCORE_LABELS.items():
+        before = float(before_status.get(key, 50.0))
+        after = float(after_status.get(key, 50.0))
+        delta = round(after - before, 1)
+        if delta != 0:
+            score_changes.append(
+                {
+                    "label": label,
+                    "before": round(before, 1),
+                    "after": round(after, 1),
+                    "delta": delta,
+                }
             )
 
-            all_core_factors = set(df_ok['コア要素リスト'].explode().dropna())
-            invalid_factors = ['逃げ展開', '先行展開']
+    if not score_changes:
+        score_changes.append(
+            {
+                "label": "プロセス評価",
+                "before": round(float(before_status.get("investor_score", 50.0)), 1),
+                "after": round(float(after_status.get("investor_score", 50.0)), 1),
+                "delta": round(
+                    float(after_status.get("investor_score", 50.0))
+                    - float(before_status.get("investor_score", 50.0)),
+                    1,
+                ),
+            }
+        )
 
-            for core_f in sorted(all_core_factors):
-                if core_f in invalid_factors:
-                    continue
-
-                sub = df_ok[df_ok['コア要素リスト'].apply(lambda x: core_f in x)]
-
-                if len(sub) >= 1:
-                    f_inv = len(sub) * 100
-                    f_rec = sub['複勝払戻'].sum()
-                    f_rec_rate = f"{(f_rec / f_inv * 100):.1f}%" if f_inv > 0 else "0.0%"
-                    f_res.append({
-                        '因子': core_f,
-                        '出走': len(sub),
-                        '複勝率': f"{(sub['着順_num'] <= 3).mean() * 100:.1f}%",
-                        '複回収': f_rec_rate
-                    })
-
-            if f_res:
-                df_f_res = pd.DataFrame(f_res)
-                df_f_res['sort_val'] = df_f_res['複回収'].str.replace('%', '').astype(float)
-                st.table(df_f_res.sort_values('sort_val', ascending=False).drop(columns=['sort_val']).head(20))
-
+    if emotional_state == "取り返したい" and decision == "見送り":
+        senpai = "買わずに耐えたのか……それ普通に強いな。俺なら高配当の幻を見てたかもしれん。"
+    elif emotional_state == "取り返したい" and decision == "購入" and actual_bet > recommended_bet:
+        senpai = "取り返したい日に上乗せ購入は危ないぞ。俺もその道で何回も転んだ。今日は反省メモ案件だ。"
+    elif decision == "見送り" and actual_bet == 0:
+        senpai = "え、買わないの！？……でも資金が減ってないの、地味に強いな。高配当だけ見てた昔の俺なら買ってた。"
+    elif decision == "購入" and actual_bet <= recommended_bet:
+        senpai = "買ったのか！いいねえ。しかも推奨額以内？俺より大人じゃん。いや、俺も少しずつ成長中だけど。"
     else:
-        st.info("データがありません。診断を実行してください。")
+        senpai = "高配当の匂いで手が伸びる気持ちは分かる。でも推奨額オーバーは財布に回し蹴りしてるのと同じだぞ。"
+
+    if emotional_state == "取り返したい" and decision == "購入" and actual_bet > recommended_bet:
+        analyst = "感情状態が取り返したいで、購入額が推奨額を超えています。ルール遵守と感情コントロールの両面でリスクが高い判断です。"
+    elif emotional_state == "取り返したい" and decision == "見送り":
+        analyst = "前の損失から判断を切り離せています。感情リスクが高い場面での見送りは、非常に合理的です。"
+    elif grade == "A" and decision == "購入" and actual_bet <= recommended_bet:
+        analyst = "A判定かつ購入額は推奨範囲内です。期待値判断と資金管理の両方で合理性があります。"
+    elif grade == "A":
+        analyst = "A判定は勝負候補です。ただし自信度と購入額の上限管理をセットで見る必要があります。"
+    elif grade == "B" and confidence <= 2 and decision == "見送り":
+        analyst = "B判定かつ自信度が低い場面です。見送りは合理的な選択です。"
+    elif grade == "B":
+        analyst = "B判定は監視候補です。期待値は残りますが、購入するなら小さく、迷うなら見送りが妥当です。"
+    else:
+        analyst = "C判定は見送り候補です。判定、自信度、資金管理の観点から、買わない判断に合理性があります。"
+
+    if emotional_state == "取り返したい" and decision == "見送り":
+        kanaloa = "今日は利益を取り返す日ではありませんでした。ルールを守る日でした。見送れたなら、それは大きな勝利です。"
+    elif emotional_state == "取り返したい" and decision == "購入" and actual_bet > recommended_bet:
+        kanaloa = "取り返したい日の購入は、判断を曇らせます。次は購入前に一度止まり、余白と上限額を確認しましょう。"
+    elif confidence <= 2 and decision == "見送り":
+        kanaloa = "買わない判断も投資です。余白を守れたことが、今日の成果です。"
+    elif actual_bet > recommended_bet:
+        kanaloa = "期待値が見えても、資金管理を崩すと長期戦では苦しくなります。次は上限を守る判断まで含めて修行しましょう。"
+    else:
+        kanaloa = "今日の判断は記録できました。結果だけでなく、余白、資金管理、感情の安定を次の一手につなげましょう。"
+
+    if new_achievements:
+        kanaloa = "新しい称号を獲得しました。これは一回の結果ではなく、積み上げた判断の証です。"
+
+    return {
+        "action": action,
+        "score_changes": score_changes,
+        "new_achievements": new_achievements,
+        "reflection_note": "" if reflection else "振り返りメモが短い、または空欄のため、振り返り力は伸びませんでした。",
+        "senpai": senpai,
+        "analyst": analyst,
+        "kanaloa": kanaloa,
+    }
+
+
+def show_training_result(result: dict[str, object]) -> None:
+    """Render the training result card shown after saving a decision."""
+    change_lines = []
+    for change in result["score_changes"]:
+        sign = "+" if change["delta"] >= 0 else ""
+        change_lines.append(
+            f'<div>・{change["label"]}：'
+            f'{change["before"]:.1f} → {change["after"]:.1f}'
+            f'（{sign}{change["delta"]:.1f}）</div>'
+        )
+    change_html = "".join(change_lines)
+    reflection_note_html = ""
+    if result.get("reflection_note"):
+        reflection_note_html = f'<div class="training-text">{result["reflection_note"]}</div>'
+    achievement_html = ""
+    if result.get("new_achievements"):
+        badges = "".join(
+            f'<div class="achievement-badge">「{title}」</div>'
+            for title in result["new_achievements"]
+        )
+        achievement_html = f"""
+          <div class="training-section">🏅 新しい称号を獲得！</div>
+          <div class="achievement-list">{badges}</div>
+        """
+    st.markdown(
+        f"""
+        <div class="training-card">
+          <div class="training-title">🏇 今回の修行結果</div>
+          {achievement_html}
+          <div class="training-section">今回の行動評価</div>
+          <div class="training-text">{result["action"]}</div>
+          <div class="training-section">📈 スコア変化（保存前 → 保存後）</div>
+          <div class="skill-list">{change_html}</div>
+          <div class="training-text">※表示は保存前 → 保存後の実スコア差分です。総合スコアには重み付き計算で反映されます。</div>
+          {reflection_note_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("**💬 キャラクターコメント**")
+    render_character_talk(
+        {
+            "senpai": result["senpai"],
+            "analyst": result["analyst"],
+            "kanaloa": result["kanaloa"],
+        }
+    )
+
+
+def format_rank_progress(progress: dict[str, object] | None) -> str:
+    """Build the next-rank requirement text shown inside the rank card."""
+    if progress is None:
+        return """
+          <div class="rank-progress">
+            <div class="rank-progress-title">最高ランク到達</div>
+            <div>すべてのランク条件を達成しています。</div>
+          </div>
+        """
+
+    lines = []
+    for condition in progress["conditions"]:
+        if condition["achieved"]:
+            status = "達成"
+        elif condition["unit"] == "レース":
+            status = f'あと{int(condition["remaining"])}レース'
+        else:
+            status = f'あと{condition["remaining"]:.1f}pt'
+        lines.append(f'<div>・{condition["label"]}：{status}</div>')
+
+    return f"""
+      <div class="rank-progress">
+        <div class="rank-progress-title">次のランク：{progress["next_rank"]}</div>
+        <div>必要条件：</div>
+        {''.join(lines)}
+      </div>
+    """
+
+
+def show_metric_row(status: pd.Series, race_count: int) -> None:
+    """Render the main player dashboard metrics."""
+    scores = {
+        "investor_score": float(status["investor_score"]),
+        "skip_skill": float(status["skip_skill"]),
+        "rule_discipline": float(status["rule_discipline"]),
+        "expected_value_judgment": float(status["expected_value_judgment"]),
+        "bankroll_stability": float(status["bankroll_stability"]),
+        "emotional_control": float(status["emotional_control"]),
+        "reflection_consistency": float(status["reflection_consistency"]),
+    }
+    rank_progress = get_next_rank_progress(scores, race_count)
+    progress_html = format_rank_progress(rank_progress)
+
+    st.markdown(
+        f"""
+        <div class="rank-card">
+          <div class="rank-label">投資家ランク</div>
+          <div class="rank-value">{status["investor_rank"]}</div>
+          {progress_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("投資家スコア", f'{status["investor_score"]:.1f}')
+    col2.metric("現在の資金", f'{status["current_bankroll"]:,.0f}円')
+    col3.metric("記録レース数", race_count)
+
+
+def show_score_breakdown(status: pd.Series) -> None:
+    """Render process score components."""
+    st.subheader("プロセススコア内訳")
+    score_items = [
+        ("見送り力", "skip_skill"),
+        ("ルール遵守力", "rule_discipline"),
+        ("期待値判断力", "expected_value_judgment"),
+        ("資金管理力", "bankroll_stability"),
+        ("感情コントロール力", "emotional_control"),
+        ("振り返り力", "reflection_consistency"),
+    ]
+    for row_start in range(0, len(score_items), 3):
+        columns = st.columns(3)
+        for column, (label, key) in zip(columns, score_items[row_start : row_start + 3]):
+            with column.container(border=True):
+                st.markdown(f"**{label}**")
+                st.metric("スコア", f"{float(status[key]):.1f}", label_visibility="collapsed")
+
+
+def show_achievements(log: pd.DataFrame) -> None:
+    """Render acquired and locked achievements on the dashboard."""
+    achievements = load_achievements()
+    catalog = achievement_catalog()
+    acquired_titles = set(achievements["title"].dropna())
+
+    st.subheader("獲得称号")
+    if achievements.empty:
+        st.write("まだ称号はありません。最初の見送りから修行を始めましょう。")
+    else:
+        badge_html = "".join(
+            f'<div class="achievement-badge">🏅 {title}</div>'
+            for title in achievements["title"].dropna()
+        )
+        st.markdown(
+            f'<div class="achievement-list">{badge_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+    locked = catalog[~catalog["title"].isin(acquired_titles)]
+    if not locked.empty:
+        with st.expander("未獲得の称号条件"):
+            for _, row in locked.iterrows():
+                progress = achievement_progress(row["rule"], log)
+                if progress["remaining"] == 0:
+                    progress_text = "条件達成済み。次の保存時に獲得します。"
+                else:
+                    progress_text = f'あと{progress["remaining"]}{progress["unit"]}'
+                st.markdown(
+                    f"""
+                    <div class="locked-achievement">
+                      <div class="locked-title">・{row["title"]}</div>
+                      <div>条件：{row["condition"]}</div>
+                      <div>進捗：{progress_text}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+def show_reset_controls() -> None:
+    """Render guarded controls for resetting all training data."""
+    with st.sidebar:
+        st.subheader("修行データ管理")
+        confirmed = st.checkbox("本当にすべての修行データをリセットします")
+        if st.button("修行データをリセットする", disabled=not confirmed):
+            reset_training_data()
+            st.session_state.pop("latest_feedback", None)
+            st.session_state["reset_message"] = (
+                "修行データをリセットしました。今日から新しい投資家修行を始めましょう。"
+            )
+            st.rerun()
+
+
+def main() -> None:
+    """Run the Streamlit app."""
+    ensure_data_files()
+    show_reset_controls()
+    update_player_status()
+    apply_layout_style()
+
+    st.title("カナロア投資道場")
+    st.caption("ボール球を見送れ！競馬投資家育成ゲーム")
+
+    if "reset_message" in st.session_state:
+        st.success(st.session_state.pop("reset_message"))
+
+    status_table = load_player_status()
+    status = status_table.iloc[0]
+    log = load_race_log()
+    update_achievements(log)
+
+    show_metric_row(status, len(log))
+    show_score_breakdown(status)
+    show_achievements(log)
+
+    st.divider()
+    left, right = st.columns([1.1, 0.9])
+
+    with left:
+        if "latest_feedback" in st.session_state:
+            st.success("判断ログを保存しました。投資家スコアを更新しました。")
+            show_training_result(st.session_state.pop("latest_feedback"))
+
+        st.subheader("レース判断入力")
+        with st.form("race_decision_form"):
+            race_date = st.date_input("日付", value=date.today())
+            race_name = st.text_input("レース名", placeholder="例：東京11R")
+            bankroll_before = st.number_input(
+                "レース前資金",
+                min_value=0.0,
+                value=float(status["current_bankroll"]),
+                step=1000.0,
+            )
+            odds = st.number_input("単勝オッズ", min_value=1.0, value=8.0, step=0.1)
+            estimated_edge = st.number_input(
+                "推定エッジ（%）",
+                min_value=-50.0,
+                max_value=100.0,
+                value=5.0,
+                step=1.0,
+            )
+            thesis = st.text_area(
+                "期待値の根拠メモ",
+                placeholder="なぜ購入候補なのか、またはなぜ見送るべきなのかを書いてください。",
+            )
+            confidence = st.slider("自信度", min_value=1, max_value=5, value=3)
+            emotional_state = st.selectbox(
+                "感情状態",
+                ["冷静", "興奮", "取り返したい", "不安"],
+            )
+            if emotional_state == "取り返したい":
+                show_chasing_loss_warning()
+
+            evaluation = evaluate_race(
+                bankroll=bankroll_before,
+                confidence=confidence,
+                estimated_edge=estimated_edge,
+                odds=odds,
+                emotional_state=emotional_state,
+                thesis=thesis,
+            )
+
+            st.info(
+                f'カナロアAI判定：{format_grade(evaluation["ai_grade"])} - {evaluation["ai_reason"]}'
+            )
+            with st.expander("💬 3人のひとこと", expanded=False):
+                render_character_talk(
+                    get_pre_decision_character_comments(
+                        ai_grade=str(evaluation["ai_grade"]),
+                        emotional_state=emotional_state,
+                        confidence_level=confidence,
+                        recommended_bet=float(evaluation["recommended_bet"]),
+                    )
+                )
+            st.write(f'推奨購入額：{evaluation["recommended_bet"]:,.0f}円')
+
+            decision = st.radio("判断", ["見送り", "購入"], horizontal=True)
+            st.session_state["template_decision"] = decision
+            st.session_state["template_emotional_state"] = emotional_state
+            actual_bet_default = float(evaluation["recommended_bet"]) if decision == "購入" else 0.0
+            actual_bet = st.number_input(
+                "実際の購入額",
+                min_value=0.0,
+                value=actual_bet_default,
+                step=100.0,
+            )
+            result_amount = st.number_input(
+                "払戻額",
+                help="実際に返ってきた金額です。的中なし・見送りは0円、マイナス値は入力できません。",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
+            )
+            profit_loss = result_amount - actual_bet
+            st.write(f"損益：{profit_loss:,.0f}円（払戻額 - 実際の購入額）")
+
+            with st.expander("振り返りテンプレート"):
+                st.markdown("**今日の判断：** 買った / 見送った")
+                st.markdown("**判断理由：** なぜ買う、または見送る判断をしたか")
+                st.markdown("**感情状態：** 冷静 / 興奮 / 取り返したい / 不安")
+                st.markdown("**守れたルール：** 推奨額を守れたか、見送り判断ができたか")
+                if emotional_state == "取り返したい":
+                    st.markdown("**取り返したい衝動への対処：** 今日、自分は衝動にどう対応したか")
+                st.markdown("**次回への改善：** 次に同じ場面が来たらどうするか")
+                template_requested = st.form_submit_button("テンプレートを使う")
+
+            reflection = st.text_area(
+                "振り返りメモ",
+                value=st.session_state.get("reflection_draft", ""),
+                placeholder="このレースから何を学びましたか？",
+            )
+
+            submitted = st.form_submit_button("判断を保存")
+
+        if template_requested:
+            st.session_state["reflection_draft"] = build_reflection_template(
+                decision, emotional_state
+            )
+            st.rerun()
+
+        if submitted:
+            if not race_name.strip():
+                st.error("保存する前にレース名を入力してください。")
+            else:
+                entry = {
+                    "date": race_date.isoformat(),
+                    "race_name": race_name.strip(),
+                    "bankroll_before": bankroll_before,
+                    "odds": odds,
+                    "estimated_edge": estimated_edge,
+                    "thesis": thesis.strip(),
+                    "ai_grade": evaluation["ai_grade"],
+                    "ai_reason": evaluation["ai_reason"],
+                    "decision": decision,
+                    "confidence": confidence,
+                    "emotional_state": emotional_state,
+                    "recommended_bet": evaluation["recommended_bet"],
+                    "actual_bet": actual_bet,
+                    "result_amount": result_amount,
+                    "profit_loss": profit_loss,
+                    "reflection": reflection.strip(),
+                }
+                before_status = update_player_status(log).iloc[0]
+                updated_log, after_status_table = add_race_decision(entry)
+                new_achievements = update_achievements(updated_log)
+                after_status = after_status_table.iloc[0]
+                st.session_state["latest_feedback"] = build_training_result(
+                    entry, evaluation, before_status, after_status, new_achievements
+                )
+                st.session_state["reflection_draft"] = ""
+                st.rerun()
+
+    with right:
+        st.subheader("CSV保存情報")
+        st.write("判断ログは `sample_data/race_decision_log.csv` に保存されます。")
+        st.write("プレイヤー状態は `sample_data/player_status.csv` に保存されます。")
+
+    st.divider()
+    st.subheader("判断ログ")
+    if log.empty:
+        st.write("まだレースは記録されていません。")
+    else:
+        localized_log = localize_log(log)
+        display_columns = [
+            "日付",
+            "レース名",
+            "AI判定",
+            "判断",
+            "自信度",
+            "感情状態",
+            "実際の購入額",
+            "払戻額",
+            "損益",
+        ]
+        st.dataframe(localized_log[display_columns].tail(20), width="stretch", height=360)
+
+    with st.expander("全判断ログ"):
+        st.dataframe(localize_log(log), width="stretch", height=420)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 venv/
+
+# Personal training logs are generated locally by the Streamlit app.
+sample_data/*.csv
