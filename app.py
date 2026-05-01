@@ -6,6 +6,19 @@ import math
 import numpy as np
 from datetime import datetime
 
+try:
+    from screenshot_input_assistant import (
+        parse_screenshot_text,
+        build_preview_rows,
+        build_confirm_memo,
+        sanitize_draft_for_session,
+    )
+    SCREENSHOT_INPUT_ASSISTANT_AVAILABLE = True
+    SCREENSHOT_INPUT_ASSISTANT_ERROR = ""
+except Exception as exc:
+    SCREENSHOT_INPUT_ASSISTANT_AVAILABLE = False
+    SCREENSHOT_INPUT_ASSISTANT_ERROR = str(exc)
+
 # ======================================================
 # 🚀 1. ページ構成・UI設定
 # ======================================================
@@ -214,6 +227,106 @@ p_adj, p_lbl = ((-25, "🔥 ハイ") if pace_val >= 7 else (20, "💤 スロー"
 
 tab1, tab2, tab3 = st.tabs(["🏇 AI診断・入力", "✅ 結果入力", "📈 資産・詳細分析"])
 
+
+def initialize_horse_input_defaults(i: int) -> None:
+    """Initialize keyed horse widgets before they are rendered.
+
+    This avoids Streamlit warnings when screenshot drafts update session_state.
+    """
+    defaults = {
+        f"t_{i}": "父カナロア",
+        f"s_{i}": "牡",
+        f"pd_{i}": 1600,
+        f"w_{i}": 1,
+        f"r_{i}": "C",
+        f"o_{i}": 10.0,
+        f"f_{i}": 3.0,
+        f"tp_{i}": "なし",
+        f"up_{i}": "なし",
+        f"g1_{i}": False,
+        f"g2_{i}": False,
+        f"g3_{i}": False,
+        f"mv_good_{i}": False,
+        f"mv_bad_{i}": [],
+        f"mv_judge_{i}": "標準",
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def apply_pending_screenshot_draft() -> None:
+    draft = st.session_state.pop("pending_screenshot_draft", None)
+    if not isinstance(draft, dict):
+        return
+
+    allowed_options = {
+        "t_0": {"父カナロア", "母父カナロア", "次世代評価"},
+        "s_0": {"牡", "牝", "セ"},
+        "r_0": {"A", "B", "C", "D", "E"},
+    }
+    allowed_keys = {
+        "n_0", "ow_0", "t_0", "s_0", "pd_0", "j_0", "tr_0", "mf_0",
+        "r_0", "o_0", "f_0", "g1_0", "g2_0", "g3_0",
+    }
+
+    for key, value in draft.items():
+        if key not in allowed_keys:
+            continue
+        if key in allowed_options and value not in allowed_options[key]:
+            continue
+        st.session_state[key] = value
+
+    st.session_state["screenshot_draft_applied_notice"] = True
+
+
+def render_screenshot_input_beta() -> None:
+    with st.expander("📸 スクショ入力β（実験・1頭目のみ）", expanded=False):
+        if not SCREENSHOT_INPUT_ASSISTANT_AVAILABLE:
+            st.warning(f"スクショ入力βを読み込めませんでした: {SCREENSHOT_INPUT_ASSISTANT_ERROR}")
+            return
+
+        text = st.text_area(
+            "スクショ文字起こしテキストを貼り付け",
+            height=220,
+            key="screenshot_beta_text",
+            placeholder="馬名：キープカルム\n性齢：牡5\n単勝オッズ：25.2",
+        )
+
+        if st.button("抽出プレビュー", key="screenshot_beta_preview_button"):
+            st.session_state["screenshot_beta_parsed"] = parse_screenshot_text(text)
+
+        parsed = st.session_state.get("screenshot_beta_parsed")
+        if not isinstance(parsed, dict):
+            st.info("文字起こしテキストを貼り付けて、抽出プレビューを押してください。")
+            return
+
+        preview_rows = build_preview_rows(parsed)
+        edited_rows = st.data_editor(
+            preview_rows,
+            key="screenshot_beta_preview_table",
+            use_container_width=True,
+            hide_index=True,
+            disabled=["項目", "confidence", "状態"],
+            column_config={
+                "項目": st.column_config.TextColumn("項目"),
+                "値": st.column_config.TextColumn("値"),
+                "confidence": st.column_config.NumberColumn("confidence", format="%.2f"),
+                "状態": st.column_config.TextColumn("状態"),
+            },
+        )
+
+        if hasattr(edited_rows, "to_dict"):
+            edited_records = edited_rows.to_dict("records")
+        else:
+            edited_records = edited_rows
+        confirmed = {str(row.get("項目", "")): str(row.get("値", "")).strip() for row in edited_records}
+        memo = build_confirm_memo(confirmed)
+        st.text_area("確認メモ", memo, height=220, disabled=True, key="screenshot_beta_confirm_memo")
+
+        if st.button("確認済みデータを1頭目へ下書き反映", key="screenshot_beta_apply_button"):
+            st.session_state["pending_screenshot_draft"] = sanitize_draft_for_session(confirmed)
+            st.rerun()
+
 # ======================================================
 # --- Tab 1: AI診断 ---
 # ======================================================
@@ -226,6 +339,15 @@ with tab1:
     if 'h_count' not in st.session_state:
         st.session_state.h_count = 1
 
+    for i in range(st.session_state.h_count):
+        initialize_horse_input_defaults(i)
+
+    apply_pending_screenshot_draft()
+    if st.session_state.pop("screenshot_draft_applied_notice", False):
+        st.success("下書きを反映しました。AI診断・保存はまだ実行されていません。")
+
+    render_screenshot_input_beta()
+
     user_inputs = []
 
     for i in range(st.session_state.h_count):
@@ -235,7 +357,7 @@ with tab1:
             owner = c2.text_input("馬主", key=f"ow_{i}")
             typ = c3.selectbox("タイプ", ["父カナロア", "母父カナロア", "次世代評価"], key=f"t_{i}")
             sex = c4.selectbox("性別", ["牡", "牝", "セ"], key=f"s_{i}")
-            p_dist = c5.number_input("前走距離", value=1600, key=f"pd_{i}")
+            p_dist = c5.number_input("前走距離", key=f"pd_{i}")
 
             c6, c7, c8, c9 = st.columns(4)
             waku = c6.number_input("枠", 1, 8, key=f"w_{i}")
@@ -244,9 +366,9 @@ with tab1:
             msire = c9.text_input("母父(父)", key=f"mf_{i}")
 
             c10, c11, c12, c13, c14 = st.columns(5)
-            rank = c10.selectbox("人気", ["A", "B", "C", "D", "E"], index=2, key=f"r_{i}")
-            odds = c11.number_input("単勝", value=10.0, key=f"o_{i}")
-            f_odds = c12.number_input("複勝", value=3.0, key=f"f_{i}")
+            rank = c10.selectbox("人気", ["A", "B", "C", "D", "E"], key=f"r_{i}")
+            odds = c11.number_input("単勝", key=f"o_{i}")
+            f_odds = c12.number_input("複勝", key=f"f_{i}")
             tp = c13.selectbox("テンP", ["なし", "15", "30", "50"], key=f"tp_{i}")
             up = c14.selectbox("上がりP", ["なし", "15", "30"], key=f"up_{i}")
 
