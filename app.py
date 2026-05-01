@@ -289,7 +289,7 @@ def render_screenshot_input_beta() -> None:
             "スクショ文字起こしテキストを貼り付け",
             height=220,
             key="screenshot_beta_text",
-            placeholder="馬名：キープカルム\n性齢：牡5\n単勝オッズ：25.2",
+            placeholder="馬名：\n性齢：\n騎手：\n厩舎：\n父：\n母父：\n人気ランク：\n単勝オッズ：\n前走距離：",
         )
 
         if st.button("抽出プレビュー", key="screenshot_beta_preview_button"):
