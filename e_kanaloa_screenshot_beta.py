@@ -318,3 +318,49 @@ def format_diagnosis_input_summary(record: Mapping[str, Any]) -> str:
     """Format one diagnosis input summary as copy-friendly text."""
     summary = build_diagnosis_input_summary(record)
     return "\n".join(f"{key}: {value}" for key, value in summary.items())
+
+
+def _safe_float(value: Any) -> float | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def build_first_horse_draft(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Build safe session_state draft values for the first diagnosis horse only."""
+    summary = build_diagnosis_input_summary(record)
+    draft: dict[str, Any] = {}
+    text_fields = {
+        "馬名": "n_0",
+        "馬主": "ow_0",
+        "騎手": "j_0",
+        "厩舎": "tr_0",
+        "母父(父)": "mf_0",
+    }
+    for source_key, session_key in text_fields.items():
+        value = normalize_text(summary.get(source_key, ""))
+        if value:
+            draft[session_key] = value
+
+    option_fields = {
+        "タイプ": ("t_0", {"父カナロア", "母父カナロア", "次世代評価"}),
+        "性別": ("s_0", {"牡", "牝", "セ"}),
+        "人気": ("r_0", {"A", "B", "C", "D", "E"}),
+    }
+    for source_key, (session_key, allowed) in option_fields.items():
+        value = normalize_text(summary.get(source_key, ""))
+        if value in allowed:
+            draft[session_key] = value
+
+    win_odds = _safe_float(summary.get("単勝", ""))
+    if win_odds is not None:
+        draft["o_0"] = win_odds
+
+    return draft

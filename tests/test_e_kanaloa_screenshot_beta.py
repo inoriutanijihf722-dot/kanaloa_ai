@@ -4,6 +4,7 @@ from e_kanaloa_screenshot_beta import (
     build_candidate_record,
     build_candidate_records_from_text,
     build_diagnosis_input_summary,
+    build_first_horse_draft,
     classify_kanaloa_type,
     detect_popularity_rank,
     format_diagnosis_input_summary,
@@ -190,3 +191,43 @@ def test_format_diagnosis_input_summary_is_copy_friendly() -> None:
     assert "馬名: テストカナロア" in text
     assert "タイプ: 父カナロア" in text
     assert "備考: 【Eカナロア母集団】候補" in text
+
+
+def test_gd_mew_first_horse_draft_maps_safe_keys() -> None:
+    record = build_candidate_record(
+        {
+            "馬名": "ジーディーミュウ",
+            "馬主": "田畑 利彦",
+            "人気ランク": "E",
+            "単勝オッズ": "234.5",
+            "性齢": "牝3",
+            "父": "ノーブルミッション",
+            "母父": "ロードカナロア",
+            "騎手": "上里直汰",
+            "厩舎": "柄崎将寿",
+        }
+    )
+    draft = build_first_horse_draft(record)
+
+    assert draft == {
+        "n_0": "ジーディーミュウ",
+        "ow_0": "田畑 利彦",
+        "j_0": "上里直汰",
+        "tr_0": "柄崎将寿",
+        "mf_0": "ロードカナロア",
+        "t_0": "母父カナロア",
+        "s_0": "牝",
+        "r_0": "E",
+        "o_0": 234.5,
+    }
+
+
+def test_first_horse_draft_omits_blank_values() -> None:
+    record = build_candidate_record({"人気ランク": "E", "母父": "ロードカナロア"})
+    draft = build_first_horse_draft(record)
+
+    assert "n_0" not in draft
+    assert "ow_0" not in draft
+    assert "o_0" not in draft
+    assert draft["t_0"] == "母父カナロア"
+    assert draft["r_0"] == "E"

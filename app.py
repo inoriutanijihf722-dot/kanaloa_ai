@@ -22,6 +22,7 @@ except Exception as exc:
 try:
     from e_kanaloa_screenshot_beta import (
         CANDIDATE_COLUMNS,
+        build_first_horse_draft,
         build_candidate_records_from_text,
         format_diagnosis_input_summary,
     )
@@ -432,10 +433,12 @@ def render_e_kanaloa_screenshot_beta() -> None:
                 st.info("OCR結果または手動修正欄に情報を入れると、候補判定を表示します。")
 
         st.markdown("##### 診断入力用サマリー")
+        st.warning("下書き反映後も、必ず馬1フォームを確認してからAI診断してください。")
         if confirmed_df.empty:
             st.info("確認済み候補にチェックすると、診断入力用サマリーを表示します。")
         else:
-            for idx, row in enumerate(confirmed_df.to_dict("records"), start=1):
+            confirmed_records = confirmed_df.to_dict("records")
+            for idx, row in enumerate(confirmed_records, start=1):
                 st.text_area(
                     f"候補{idx} 診断入力用サマリー",
                     format_diagnosis_input_summary(row),
@@ -443,6 +446,14 @@ def render_e_kanaloa_screenshot_beta() -> None:
                     key=f"e_kanaloa_diagnosis_summary_{idx}",
                     disabled=True,
                 )
+            if len(confirmed_records) == 1:
+                if st.button("馬1フォームへ下書き反映", key="e_kanaloa_apply_first_horse_draft"):
+                    st.session_state["pending_screenshot_draft"] = build_first_horse_draft(
+                        confirmed_records[0]
+                    )
+                    st.rerun()
+            else:
+                st.info("馬1フォームへの下書き反映は、確認済み候補が1頭だけの場合に利用できます。")
 
         if confirmed_df.empty:
             st.info("CSV出力するには、候補行の確認済みにチェックを入れてください。")
