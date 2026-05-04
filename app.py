@@ -19,6 +19,17 @@ except Exception as exc:
     SCREENSHOT_INPUT_ASSISTANT_AVAILABLE = False
     SCREENSHOT_INPUT_ASSISTANT_ERROR = str(exc)
 
+try:
+    from e_kanaloa_screenshot_beta import (
+        CANDIDATE_COLUMNS,
+        build_candidate_records_from_text,
+    )
+    E_KANALOA_SCREENSHOT_AVAILABLE = True
+    E_KANALOA_SCREENSHOT_ERROR = ""
+except Exception as exc:
+    E_KANALOA_SCREENSHOT_AVAILABLE = False
+    E_KANALOA_SCREENSHOT_ERROR = str(exc)
+
 # ======================================================
 # 🚀 1. ページ構成・UI設定
 # ======================================================
@@ -327,6 +338,110 @@ def render_screenshot_input_beta() -> None:
             st.session_state["pending_screenshot_draft"] = sanitize_draft_for_session(confirmed)
             st.rerun()
 
+
+def render_e_kanaloa_screenshot_beta() -> None:
+    with st.expander("人気ランクEカナロア抽出β", expanded=False):
+        st.caption(
+            "スクショ由来テキストから【Eカナロア母集団】候補を確認する実験機能です。"
+            "既存のA/B/C判定・期待値・推奨額・投資ログ保存には接続しません。"
+        )
+        st.warning("これは母集団抽出βです。ディープバリュー候補の自動判定ではありません。")
+
+        if not E_KANALOA_SCREENSHOT_AVAILABLE:
+            st.warning(f"Eカナロア抽出βを読み込めませんでした: {E_KANALOA_SCREENSHOT_ERROR}")
+            return
+
+        uploaded_files = st.file_uploader(
+            "馬詳細・血統表・出馬表・評価表スクショ",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="e_kanaloa_screenshot_uploads",
+            help="第1段階ではOCRを実行しません。OCR結果や手入力メモを下の欄に貼り付けてください。",
+        )
+        if uploaded_files:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "ファイル名": uploaded_file.name,
+                            "種類": uploaded_file.type,
+                            "サイズKB": round(uploaded_file.size / 1024, 1),
+                        }
+                        for uploaded_file in uploaded_files
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("スクショをアップロードすると、ここに受信済みファイル一覧を表示します。")
+
+        ocr_text = st.text_area(
+            "OCR結果貼り付け欄",
+            key="e_kanaloa_ocr_text",
+            height=150,
+            placeholder=(
+                "例：馬名 ジーディーミュウ\n"
+                "人気ランク E\n単勝オッズ 234.5\n父 ノーブルミッション\n母父 ロードカナロア"
+            ),
+        )
+        manual_text = st.text_area(
+            "手動修正欄",
+            key="e_kanaloa_manual_text",
+            height=120,
+            placeholder="OCR結果を補う修正メモを入れてください。複数候補は --- で区切れます。",
+        )
+
+        combined_text = "\n".join(part for part in [ocr_text, manual_text] if part.strip())
+        candidate_rows = build_candidate_records_from_text(combined_text)
+        candidate_df = pd.DataFrame(candidate_rows).reindex(columns=CANDIDATE_COLUMNS)
+
+        edited_df = st.data_editor(
+            candidate_df,
+            key="e_kanaloa_candidate_review_table",
+            use_container_width=True,
+            hide_index=True,
+            disabled=["候補判定", "対象外理由", "suggested_tag", "deep_value_tag"],
+            column_config={
+                "確認済み": st.column_config.CheckboxColumn("確認済み"),
+                "備考": st.column_config.TextColumn("備考", width="large"),
+                "候補判定": st.column_config.TextColumn("候補判定"),
+                "対象外理由": st.column_config.TextColumn("対象外理由"),
+                "suggested_tag": st.column_config.TextColumn("suggested_tag"),
+                "deep_value_tag": st.column_config.TextColumn("deep_value_tag"),
+            },
+        )
+
+        candidate_count = int(
+            (edited_df["候補判定"].astype(str) == "✅ 【Eカナロア母集団】候補").sum()
+        )
+        confirmed_df = edited_df[
+            (edited_df["確認済み"].astype(bool))
+            & (edited_df["候補判定"].astype(str) == "✅ 【Eカナロア母集団】候補")
+        ].copy()
+
+        if candidate_count:
+            st.success(f"✅ 【Eカナロア母集団】候補: {candidate_count}件")
+        else:
+            reasons = edited_df["対象外理由"].astype(str)
+            reasons = [reason for reason in reasons if reason]
+            if reasons:
+                st.info("対象外理由: " + " / ".join(dict.fromkeys(reasons)))
+            else:
+                st.info("OCR結果または手動修正欄に情報を入れると、候補判定を表示します。")
+
+        if confirmed_df.empty:
+            st.info("CSV出力するには、候補行の確認済みにチェックを入れてください。")
+        else:
+            csv_bytes = confirmed_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "確認済み候補CSVをダウンロード",
+                data=csv_bytes,
+                file_name="e_kanaloa_population_candidates.csv",
+                mime="text/csv",
+                key="e_kanaloa_candidates_download",
+            )
+
 # ======================================================
 # --- Tab 1: AI診断 ---
 # ======================================================
@@ -347,6 +462,7 @@ with tab1:
         st.success("下書きを反映しました。AI診断・保存はまだ実行されていません。")
 
     render_screenshot_input_beta()
+    render_e_kanaloa_screenshot_beta()
 
     user_inputs = []
 
