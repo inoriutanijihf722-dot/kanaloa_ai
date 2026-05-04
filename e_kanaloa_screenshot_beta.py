@@ -255,3 +255,66 @@ def build_candidate_records_from_text(text: Any) -> list[dict[str, Any]]:
         return [build_candidate_record({})]
     blocks = [block.strip() for block in re.split(r"\n?\s*---+\s*\n?", normalized) if block.strip()]
     return [build_candidate_record(parse_candidate_text(block)) for block in blocks]
+
+
+def _diagnosis_type(kanaloa_type: Any) -> str:
+    normalized = normalize_text(kanaloa_type)
+    if normalized in {"父カナロア", "母父カナロア"}:
+        return normalized
+    if normalized:
+        return "次世代評価"
+    return ""
+
+
+def _sex_from_age(value: Any) -> str:
+    normalized = normalize_text(value)
+    if normalized.startswith("牡"):
+        return "牡"
+    if normalized.startswith("牝"):
+        return "牝"
+    if normalized.startswith("セ") or normalized.startswith("せん"):
+        return "セ"
+    return ""
+
+
+def build_diagnosis_input_summary(record: Mapping[str, Any]) -> dict[str, str]:
+    """Build a read-only summary for manual Kanaloa AI diagnosis input."""
+    father = _safe_get(record, "父")
+    damsire = _safe_get(record, "母父")
+    rank = _safe_get(record, "人気ランク").upper()
+    win_odds = _safe_get(record, "単勝オッズ")
+    kanaloa_type = _safe_get(record, "カナロア該当タイプ")
+    population_note = "【Eカナロア母集団】候補" if is_e_kanaloa_candidate(record) else "対象外"
+    bloodline_note = " / ".join(
+        part
+        for part in [
+            f"父:{father}" if father else "",
+            f"母父:{damsire}" if damsire else "",
+            f"タイプ:{kanaloa_type}" if kanaloa_type else "",
+            f"人気:{rank}" if rank else "",
+            f"単勝:{win_odds}" if win_odds else "",
+        ]
+        if part
+    )
+    note = population_note
+    if bloodline_note:
+        note = f"{note} {bloodline_note}"
+
+    return {
+        "馬名": _safe_get(record, "馬名"),
+        "馬主": _safe_get(record, "馬主"),
+        "タイプ": _diagnosis_type(kanaloa_type),
+        "性別": _sex_from_age(record.get("性齢", "")),
+        "騎手": _safe_get(record, "騎手"),
+        "厩舎": _safe_get(record, "厩舎"),
+        "母父(父)": damsire or father,
+        "人気": rank,
+        "単勝": win_odds,
+        "備考": note,
+    }
+
+
+def format_diagnosis_input_summary(record: Mapping[str, Any]) -> str:
+    """Format one diagnosis input summary as copy-friendly text."""
+    summary = build_diagnosis_input_summary(record)
+    return "\n".join(f"{key}: {value}" for key, value in summary.items())

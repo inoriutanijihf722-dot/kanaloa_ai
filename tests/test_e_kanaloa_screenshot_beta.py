@@ -3,8 +3,10 @@ from __future__ import annotations
 from e_kanaloa_screenshot_beta import (
     build_candidate_record,
     build_candidate_records_from_text,
+    build_diagnosis_input_summary,
     classify_kanaloa_type,
     detect_popularity_rank,
+    format_diagnosis_input_summary,
     is_e_kanaloa_candidate,
 )
 
@@ -133,3 +135,58 @@ def test_owner_road_hc_only_no_colon_is_not_kanaloa_bloodline() -> None:
     assert records[0]["カナロア該当タイプ"] == ""
     assert is_e_kanaloa_candidate(records[0]) is False
     assert "カナロア血統が確認できない" in records[0]["対象外理由"]
+
+
+def test_gd_mew_diagnosis_input_summary() -> None:
+    record = build_candidate_record(
+        {
+            "馬名": "ジーディーミュウ",
+            "馬主": "田畑 利彦",
+            "人気ランク": "E",
+            "単勝オッズ": "234.5",
+            "性齢": "牝3",
+            "父": "ノーブルミッション",
+            "母父": "ロードカナロア",
+            "騎手": "上里直汰",
+            "厩舎": "柄崎将寿",
+        }
+    )
+    summary = build_diagnosis_input_summary(record)
+
+    assert summary["馬名"] == "ジーディーミュウ"
+    assert summary["馬主"] == "田畑 利彦"
+    assert summary["タイプ"] == "母父カナロア"
+    assert summary["性別"] == "牝"
+    assert summary["騎手"] == "上里直汰"
+    assert summary["厩舎"] == "柄崎将寿"
+    assert summary["母父(父)"] == "ロードカナロア"
+    assert summary["人気"] == "E"
+    assert summary["単勝"] == "234.5"
+    assert "【Eカナロア母集団】候補" in summary["備考"]
+    assert record["deep_value_tag"] == ""
+
+
+def test_sire_kanaloa_diagnosis_input_summary_type() -> None:
+    record = build_candidate_record({"人気ランク": "E", "性齢": "牡3", "父": "ロードカナロア"})
+    summary = build_diagnosis_input_summary(record)
+
+    assert summary["タイプ"] == "父カナロア"
+    assert summary["性別"] == "牡"
+    assert summary["母父(父)"] == "ロードカナロア"
+
+
+def test_diagnosis_input_summary_handles_missing_sex_age() -> None:
+    record = build_candidate_record({"人気ランク": "E", "母父": "ロードカナロア"})
+    summary = build_diagnosis_input_summary(record)
+
+    assert summary["性別"] == ""
+    assert summary["タイプ"] == "母父カナロア"
+
+
+def test_format_diagnosis_input_summary_is_copy_friendly() -> None:
+    record = build_candidate_record({"馬名": "テストカナロア", "人気ランク": "E", "父": "ロードカナロア"})
+    text = format_diagnosis_input_summary(record)
+
+    assert "馬名: テストカナロア" in text
+    assert "タイプ: 父カナロア" in text
+    assert "備考: 【Eカナロア母集団】候補" in text

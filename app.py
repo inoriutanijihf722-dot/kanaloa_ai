@@ -23,6 +23,7 @@ try:
     from e_kanaloa_screenshot_beta import (
         CANDIDATE_COLUMNS,
         build_candidate_records_from_text,
+        format_diagnosis_input_summary,
     )
     E_KANALOA_SCREENSHOT_AVAILABLE = True
     E_KANALOA_SCREENSHOT_ERROR = ""
@@ -429,6 +430,19 @@ def render_e_kanaloa_screenshot_beta() -> None:
                 st.info("対象外理由: " + " / ".join(dict.fromkeys(reasons)))
             else:
                 st.info("OCR結果または手動修正欄に情報を入れると、候補判定を表示します。")
+
+        st.markdown("##### 診断入力用サマリー")
+        if confirmed_df.empty:
+            st.info("確認済み候補にチェックすると、診断入力用サマリーを表示します。")
+        else:
+            for idx, row in enumerate(confirmed_df.to_dict("records"), start=1):
+                st.text_area(
+                    f"候補{idx} 診断入力用サマリー",
+                    format_diagnosis_input_summary(row),
+                    height=220,
+                    key=f"e_kanaloa_diagnosis_summary_{idx}",
+                    disabled=True,
+                )
 
         if confirmed_df.empty:
             st.info("CSV出力するには、候補行の確認済みにチェックを入れてください。")
