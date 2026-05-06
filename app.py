@@ -22,8 +22,10 @@ except Exception as exc:
 try:
     from e_kanaloa_screenshot_beta import (
         CANDIDATE_COLUMNS,
+        INTERNAL_FIELD_COLUMNS,
         build_first_horse_draft,
-        build_candidate_records_from_text,
+        build_candidate_records_from_ocr_and_manual,
+        build_debug_records,
         format_diagnosis_input_summary,
     )
     E_KANALOA_SCREENSHOT_AVAILABLE = True
@@ -394,16 +396,43 @@ def render_e_kanaloa_screenshot_beta() -> None:
             placeholder="OCR結果を補う修正メモを入れてください。複数候補は --- で区切れます。",
         )
 
-        combined_text = "\n".join(part for part in [ocr_text, manual_text] if part.strip())
-        candidate_rows = build_candidate_records_from_text(combined_text)
-        candidate_df = pd.DataFrame(candidate_rows).reindex(columns=CANDIDATE_COLUMNS)
+        candidate_rows = build_candidate_records_from_ocr_and_manual(ocr_text, manual_text)
+        candidate_columns = CANDIDATE_COLUMNS + INTERNAL_FIELD_COLUMNS
+        candidate_df = pd.DataFrame(candidate_rows).reindex(columns=candidate_columns)
+
+        with st.expander("デバッグ: Eカナロア候補判定前データ", expanded=False):
+            debug_rows = build_debug_records(ocr_text, manual_text)
+            for idx, debug_row in enumerate(debug_rows, start=1):
+                st.markdown(f"###### 候補{idx}")
+                st.text_area(
+                    f"候補{idx} OCR raw text",
+                    debug_row["OCR raw text"],
+                    height=100,
+                    disabled=True,
+                    key=f"e_kanaloa_debug_ocr_{idx}",
+                )
+                st.text_area(
+                    f"候補{idx} manual override text",
+                    debug_row["manual override text"],
+                    height=100,
+                    disabled=True,
+                    key=f"e_kanaloa_debug_manual_{idx}",
+                )
+                st.json(debug_row["merged candidate dict"])
+                st.json(debug_row["is_kanaloa_candidate の判定理由"])
 
         edited_df = st.data_editor(
             candidate_df,
             key="e_kanaloa_candidate_review_table",
             use_container_width=True,
             hide_index=True,
-            disabled=["候補判定", "対象外理由", "suggested_tag", "deep_value_tag"],
+            disabled=[
+                "候補判定",
+                "対象外理由",
+                "suggested_tag",
+                "deep_value_tag",
+                *INTERNAL_FIELD_COLUMNS,
+            ],
             column_config={
                 "確認済み": st.column_config.CheckboxColumn("確認済み"),
                 "備考": st.column_config.TextColumn("備考", width="large"),

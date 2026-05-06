@@ -39,6 +39,13 @@ CANDIDATE_COLUMNS = [
     "suggested_tag",
     "deep_value_tag",
 ]
+INTERNAL_FIELD_COLUMNS = [
+    "horse_name",
+    "sire_name",
+    "dam_sire_name",
+    "kanaloa_type",
+    "form_bloodline_name",
+]
 
 
 def normalize_text(text: Any) -> str:
@@ -68,7 +75,7 @@ def _labeled_values(text: str) -> dict[str, str]:
             label, value = line.split(":", 1)
         else:
             match = re.match(
-                r"^(母母父|母父|父|人気ランク|単勝オッズ|馬名|レース名|レース|場|R|レース番号|馬番|番号|性齢|騎手|厩舎|調教師|馬主|生産者|備考)\s+(.+)$",
+                r"^(母母父|母父|父|人気ランク|人気|ランク|単勝オッズ|単勝|馬名|レース名|レース|場|R|レース番号|馬番|番号|性齢|騎手|厩舎|調教師|馬主|生産者|カナロア該当タイプ|タイプ|備考)\s+(.+)$",
                 line,
             )
             if not match:
@@ -170,10 +177,14 @@ def classify_kanaloa_type(father: Any, damsire: Any, bloodline_text: Any) -> str
 def is_e_kanaloa_candidate(record: Mapping[str, Any]) -> bool:
     """Return True only for rank E and Kanaloa sire/damsire/bloodline evidence."""
     rank = normalize_text(record.get("人気ランク", "")).upper()
-    kanaloa_type = normalize_text(record.get("カナロア該当タイプ", ""))
+    kanaloa_type = normalize_text(
+        record.get("kanaloa_type", "") or record.get("カナロア該当タイプ", "")
+    )
     if not kanaloa_type:
         kanaloa_type = classify_kanaloa_type(
-            record.get("父", ""), record.get("母父", ""), record.get("備考", "")
+            record.get("sire_name", "") or record.get("父", ""),
+            record.get("dam_sire_name", "") or record.get("母父", ""),
+            record.get("備考", ""),
         )
     return rank == "E" and bool(kanaloa_type)
 
@@ -182,9 +193,36 @@ def _candidate_reason(record: Mapping[str, Any]) -> str:
     reasons = []
     if normalize_text(record.get("人気ランク", "")).upper() != "E":
         reasons.append("人気ランクがEではない")
-    if not normalize_text(record.get("カナロア該当タイプ", "")):
+    if not normalize_text(record.get("kanaloa_type", "") or record.get("カナロア該当タイプ", "")):
         reasons.append("カナロア血統が確認できない")
     return " / ".join(reasons)
+
+
+def explain_e_kanaloa_candidate(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Return compact debug details for the E Kanaloa candidate decision."""
+    rank = normalize_text(record.get("人気ランク", "")).upper()
+    sire_name = _safe_get(record, "sire_name") or _safe_get(record, "父")
+    dam_sire_name = _safe_get(record, "dam_sire_name") or _safe_get(record, "母父")
+    kanaloa_type = _safe_get(record, "kanaloa_type") or _safe_get(record, "カナロア該当タイプ")
+    if not kanaloa_type:
+        kanaloa_type = classify_kanaloa_type(sire_name, dam_sire_name, record.get("備考", ""))
+    is_rank_e = rank == "E"
+    has_kanaloa = bool(kanaloa_type) or _has_kanaloa(dam_sire_name) or _has_kanaloa(sire_name)
+    reasons = []
+    if not is_rank_e:
+        reasons.append("人気ランクがEではない")
+    if not has_kanaloa:
+        reasons.append("カナロア血統が確認できない")
+    return {
+        "is_e_rank": is_rank_e,
+        "has_kanaloa_bloodline": has_kanaloa,
+        "sire_name": sire_name,
+        "dam_sire_name": dam_sire_name,
+        "kanaloa_type": kanaloa_type,
+        "form_bloodline_name": _form_bloodline_name(kanaloa_type, sire_name, dam_sire_name),
+        "is_kanaloa_candidate": is_rank_e and has_kanaloa,
+        "reason": " / ".join(reasons) if reasons else "人気ランクEかつカナロア血統を確認",
+    }
 
 
 def parse_candidate_text(text: Any) -> dict[str, str]:
@@ -198,7 +236,8 @@ def parse_candidate_text(text: Any) -> dict[str, str]:
         "R": _label_value(labels, "R", "レース番号"),
         "馬番": _label_value(labels, "馬番", "番号"),
         "性齢": _label_value(labels, "性齢"),
-        "人気ランク": _label_value(labels, "人気ランク", "ランク") or detect_popularity_rank(normalized),
+        "人気ランク": _label_value(labels, "人気ランク", "人気", "ランク")
+        or detect_popularity_rank(normalized),
         "単勝オッズ": _label_value(labels, "単勝オッズ", "単勝"),
         "騎手": _label_value(labels, "騎手"),
         "厩舎": _label_value(labels, "厩舎", "調教師"),
@@ -207,6 +246,7 @@ def parse_candidate_text(text: Any) -> dict[str, str]:
         "父": _label_value(labels, "父"),
         "母父": _label_value(labels, "母父"),
         "母母父": _label_value(labels, "母母父"),
+        "カナロア該当タイプ": _label_value(labels, "カナロア該当タイプ", "タイプ"),
         "備考": _label_value(labels, "備考") or normalized,
     }
 
@@ -224,10 +264,34 @@ def parse_candidate_text(text: Any) -> dict[str, str]:
     return {key: normalize_text(value) for key, value in record.items()}
 
 
+def merge_candidate_fields(
+    base_fields: Mapping[str, Any], override_fields: Mapping[str, Any]
+) -> dict[str, str]:
+    """Merge parsed OCR fields with manual override fields taking precedence."""
+    merged: dict[str, str] = {}
+    all_keys = set(base_fields) | set(override_fields)
+    for key in all_keys:
+        override_value = normalize_text(override_fields.get(key, ""))
+        base_value = normalize_text(base_fields.get(key, ""))
+        merged[key] = override_value if override_value else base_value
+    return merged
+
+
+def _form_bloodline_name(kanaloa_type: Any, father: Any, damsire: Any) -> str:
+    normalized_type = normalize_text(kanaloa_type)
+    father_text = normalize_text(father)
+    damsire_text = normalize_text(damsire)
+    if normalized_type == "母父カナロア":
+        return father_text
+    if normalized_type == "父カナロア":
+        return damsire_text
+    return damsire_text or father_text
+
+
 def build_candidate_record(parsed_fields: Mapping[str, Any]) -> dict[str, Any]:
     """Build one editable confirmation-table row."""
-    record = {column: "" for column in CANDIDATE_COLUMNS}
-    for key in CANDIDATE_COLUMNS:
+    record = {column: "" for column in CANDIDATE_COLUMNS + INTERNAL_FIELD_COLUMNS}
+    for key in CANDIDATE_COLUMNS + INTERNAL_FIELD_COLUMNS:
         if key in parsed_fields:
             record[key] = parsed_fields[key]
 
@@ -236,9 +300,24 @@ def build_candidate_record(parsed_fields: Mapping[str, Any]) -> dict[str, Any]:
         for key in ("父", "母父", "母母父", "備考", "bloodline_text")
     )
     record["人気ランク"] = normalize_text(record["人気ランク"]).upper()
-    record["カナロア該当タイプ"] = classify_kanaloa_type(
-        record["父"], record["母父"], bloodline_text
+    record["horse_name"] = normalize_text(record.get("horse_name", "") or record.get("馬名", ""))
+    record["sire_name"] = normalize_text(record.get("sire_name", "") or record.get("父", ""))
+    record["dam_sire_name"] = normalize_text(record.get("dam_sire_name", "") or record.get("母父", ""))
+    record["kanaloa_type"] = normalize_text(
+        record.get("kanaloa_type", "") or record.get("カナロア該当タイプ", "")
     )
+    if not record["kanaloa_type"]:
+        record["kanaloa_type"] = classify_kanaloa_type(
+            record["sire_name"], record["dam_sire_name"], bloodline_text
+        )
+    record["form_bloodline_name"] = normalize_text(
+        record.get("form_bloodline_name", "")
+        or _form_bloodline_name(record["kanaloa_type"], record["sire_name"], record["dam_sire_name"])
+    )
+    record["馬名"] = normalize_text(record["馬名"] or record["horse_name"])
+    record["父"] = normalize_text(record["父"] or record["sire_name"])
+    record["母父"] = normalize_text(record["母父"] or record["dam_sire_name"])
+    record["カナロア該当タイプ"] = record["kanaloa_type"]
     is_candidate = is_e_kanaloa_candidate(record)
     record["候補判定"] = "✅ 【Eカナロア母集団】候補" if is_candidate else "対象外"
     record["対象外理由"] = "" if is_candidate else _candidate_reason(record)
@@ -255,6 +334,67 @@ def build_candidate_records_from_text(text: Any) -> list[dict[str, Any]]:
         return [build_candidate_record({})]
     blocks = [block.strip() for block in re.split(r"\n?\s*---+\s*\n?", normalized) if block.strip()]
     return [build_candidate_record(parse_candidate_text(block)) for block in blocks]
+
+
+def build_candidate_records_from_ocr_and_manual(
+    ocr_text: Any, manual_text: Any
+) -> list[dict[str, Any]]:
+    """Build records by applying manual parsed fields over OCR parsed fields."""
+    normalized_ocr = normalize_text(ocr_text)
+    normalized_manual = normalize_text(manual_text)
+    if not normalized_ocr and not normalized_manual:
+        return [build_candidate_record({})]
+
+    ocr_blocks = [
+        block.strip()
+        for block in re.split(r"\n?\s*---+\s*\n?", normalized_ocr)
+        if block.strip()
+    ]
+    manual_blocks = [
+        block.strip()
+        for block in re.split(r"\n?\s*---+\s*\n?", normalized_manual)
+        if block.strip()
+    ]
+    block_count = max(len(ocr_blocks), len(manual_blocks), 1)
+    records: list[dict[str, Any]] = []
+    for index in range(block_count):
+        base_fields = parse_candidate_text(ocr_blocks[index]) if index < len(ocr_blocks) else {}
+        override_fields = parse_candidate_text(manual_blocks[index]) if index < len(manual_blocks) else {}
+        records.append(build_candidate_record(merge_candidate_fields(base_fields, override_fields)))
+    return records
+
+
+def build_debug_records(ocr_text: Any, manual_text: Any) -> list[dict[str, Any]]:
+    """Build debug rows showing OCR, manual overrides, merged candidate and reason."""
+    normalized_ocr = normalize_text(ocr_text)
+    normalized_manual = normalize_text(manual_text)
+    ocr_blocks = [
+        block.strip()
+        for block in re.split(r"\n?\s*---+\s*\n?", normalized_ocr)
+        if block.strip()
+    ]
+    manual_blocks = [
+        block.strip()
+        for block in re.split(r"\n?\s*---+\s*\n?", normalized_manual)
+        if block.strip()
+    ]
+    block_count = max(len(ocr_blocks), len(manual_blocks), 1)
+    debug_rows: list[dict[str, Any]] = []
+    for index in range(block_count):
+        ocr_block = ocr_blocks[index] if index < len(ocr_blocks) else ""
+        manual_block = manual_blocks[index] if index < len(manual_blocks) else ""
+        base_fields = parse_candidate_text(ocr_block) if ocr_block else {}
+        override_fields = parse_candidate_text(manual_block) if manual_block else {}
+        merged_record = build_candidate_record(merge_candidate_fields(base_fields, override_fields))
+        debug_rows.append(
+            {
+                "OCR raw text": ocr_block,
+                "manual override text": manual_block,
+                "merged candidate dict": merged_record,
+                "is_kanaloa_candidate の判定理由": explain_e_kanaloa_candidate(merged_record),
+            }
+        )
+    return debug_rows
 
 
 def _diagnosis_type(kanaloa_type: Any) -> str:
@@ -279,8 +419,8 @@ def _sex_from_age(value: Any) -> str:
 
 def build_diagnosis_input_summary(record: Mapping[str, Any]) -> dict[str, str]:
     """Build a read-only summary for manual Kanaloa AI diagnosis input."""
-    father = _safe_get(record, "父")
-    damsire = _safe_get(record, "母父")
+    father = _safe_get(record, "sire_name") or _safe_get(record, "父")
+    damsire = _safe_get(record, "dam_sire_name") or _safe_get(record, "母父")
     rank = _safe_get(record, "人気ランク").upper()
     win_odds = _safe_get(record, "単勝オッズ")
     kanaloa_type = _safe_get(record, "カナロア該当タイプ")
@@ -307,7 +447,8 @@ def build_diagnosis_input_summary(record: Mapping[str, Any]) -> dict[str, str]:
         "性別": _sex_from_age(record.get("性齢", "")),
         "騎手": _safe_get(record, "騎手"),
         "厩舎": _safe_get(record, "厩舎"),
-        "母父(父)": damsire or father,
+        "母父(父)": _safe_get(record, "form_bloodline_name")
+        or _form_bloodline_name(kanaloa_type, father, damsire),
         "人気": rank,
         "単勝": win_odds,
         "備考": note,

@@ -3,6 +3,8 @@ from __future__ import annotations
 from e_kanaloa_screenshot_beta import (
     build_candidate_record,
     build_candidate_records_from_text,
+    build_candidate_records_from_ocr_and_manual,
+    build_debug_records,
     build_diagnosis_input_summary,
     build_first_horse_draft,
     classify_kanaloa_type,
@@ -160,7 +162,7 @@ def test_gd_mew_diagnosis_input_summary() -> None:
     assert summary["性別"] == "牝"
     assert summary["騎手"] == "上里直汰"
     assert summary["厩舎"] == "柄崎将寿"
-    assert summary["母父(父)"] == "ロードカナロア"
+    assert summary["母父(父)"] == "ノーブルミッション"
     assert summary["人気"] == "E"
     assert summary["単勝"] == "234.5"
     assert "【Eカナロア母集団】候補" in summary["備考"]
@@ -168,12 +170,14 @@ def test_gd_mew_diagnosis_input_summary() -> None:
 
 
 def test_sire_kanaloa_diagnosis_input_summary_type() -> None:
-    record = build_candidate_record({"人気ランク": "E", "性齢": "牡3", "父": "ロードカナロア"})
+    record = build_candidate_record(
+        {"人気ランク": "E", "性齢": "牡3", "父": "ロードカナロア", "母父": "Tapit"}
+    )
     summary = build_diagnosis_input_summary(record)
 
     assert summary["タイプ"] == "父カナロア"
     assert summary["性別"] == "牡"
-    assert summary["母父(父)"] == "ロードカナロア"
+    assert summary["母父(父)"] == "Tapit"
 
 
 def test_diagnosis_input_summary_handles_missing_sex_age() -> None:
@@ -214,7 +218,7 @@ def test_gd_mew_first_horse_draft_maps_safe_keys() -> None:
         "ow_0": "田畑 利彦",
         "j_0": "上里直汰",
         "tr_0": "柄崎将寿",
-        "mf_0": "ロードカナロア",
+        "mf_0": "ノーブルミッション",
         "t_0": "母父カナロア",
         "s_0": "牝",
         "r_0": "E",
@@ -231,3 +235,49 @@ def test_first_horse_draft_omits_blank_values() -> None:
     assert "o_0" not in draft
     assert draft["t_0"] == "母父カナロア"
     assert draft["r_0"] == "E"
+
+
+def test_manual_override_takes_precedence_for_damsire_kanaloa() -> None:
+    records = build_candidate_records_from_ocr_and_manual(
+        "馬名 エナジーアユ\n人気ランク E\n父 モズアスコット\n母父 ディープインパクト\n単勝オッズ 105.8",
+        "母父: ロードカナロア\nタイプ: 母父カナロア",
+    )
+    record = records[0]
+    summary = build_diagnosis_input_summary(record)
+    draft = build_first_horse_draft(record)
+
+    assert record["母父"] == "ロードカナロア"
+    assert record["dam_sire_name"] == "ロードカナロア"
+    assert record["カナロア該当タイプ"] == "母父カナロア"
+    assert record["form_bloodline_name"] == "モズアスコット"
+    assert is_e_kanaloa_candidate(record) is True
+    assert summary["母父(父)"] == "モズアスコット"
+    assert draft["mf_0"] == "モズアスコット"
+
+
+def test_water_bubinga_damsire_kanaloa_uses_sire_for_form_bloodline() -> None:
+    records = build_candidate_records_from_ocr_and_manual(
+        "馬名 ウォーターブビンガ\n人気 E\n単勝 79.7\n父 ダノンキングリー",
+        "母父: ロードカナロア\nタイプ: 母父カナロア",
+    )
+    record = records[0]
+
+    assert record["人気ランク"] == "E"
+    assert record["カナロア該当タイプ"] == "母父カナロア"
+    assert record["form_bloodline_name"] == "ダノンキングリー"
+    assert is_e_kanaloa_candidate(record) is True
+    assert build_first_horse_draft(record)["mf_0"] == "ダノンキングリー"
+
+
+def test_debug_records_show_merged_candidate_and_reason() -> None:
+    debug_rows = build_debug_records(
+        "馬名 エナジーアユ\n人気ランク E\n父 モズアスコット",
+        "母父: ロードカナロア\nタイプ: 母父カナロア",
+    )
+
+    merged = debug_rows[0]["merged candidate dict"]
+    reason = debug_rows[0]["is_kanaloa_candidate の判定理由"]
+    assert merged["dam_sire_name"] == "ロードカナロア"
+    assert merged["kanaloa_type"] == "母父カナロア"
+    assert reason["is_kanaloa_candidate"] is True
+    assert reason["form_bloodline_name"] == "モズアスコット"
