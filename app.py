@@ -6,6 +6,8 @@ import math
 import numpy as np
 from datetime import datetime
 
+from growth_candidate_judge import GrowthInput, judge_growth_candidate
+
 try:
     from screenshot_input_assistant import (
         parse_screenshot_text,
@@ -496,6 +498,134 @@ def render_e_kanaloa_screenshot_beta() -> None:
                 key="e_kanaloa_candidates_download",
             )
 
+
+def render_growth_candidate_beta() -> None:
+    with st.expander("🌱 成長候補判定β（実験）", expanded=False):
+        st.caption("このβ機能は既存診断・投資判定・CSV保存には影響しません")
+
+        try:
+            horse_name = st.text_input(
+                "馬名",
+                key="growth_candidate_horse_name",
+                placeholder="例: 成長ホース",
+            )
+            body_weight_delta_text = st.text_input(
+                "馬体重増減",
+                key="growth_candidate_body_weight_delta",
+                placeholder="例: +8 / -4 / 空欄",
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                has_training_pb = st.checkbox(
+                    "調教時計自己ベスト",
+                    key="growth_candidate_training_pb",
+                )
+                has_stable_growth_comment = st.checkbox(
+                    "厩舎コメント成長示唆",
+                    key="growth_candidate_stable_comment",
+                )
+                position_improved = st.checkbox(
+                    "位置取り改善",
+                    key="growth_candidate_position_improved",
+                )
+            with col2:
+                stretch_response_improved = st.checkbox(
+                    "直線手応え良化",
+                    key="growth_candidate_stretch_response",
+                )
+                can_take_front_or_mid_position = st.checkbox(
+                    "先団〜中団を取れる",
+                    key="growth_candidate_front_or_mid",
+                )
+                odds_rank = st.selectbox(
+                    "人気ランク",
+                    ["", "A", "B", "C", "D", "E"],
+                    key="growth_candidate_odds_rank",
+                )
+
+            notes = st.text_area(
+                "メモ",
+                key="growth_candidate_notes",
+                height=90,
+                placeholder="成長サイン、映像確認、次走で確認したい条件など",
+            )
+
+            body_weight_delta = None
+            if body_weight_delta_text.strip():
+                body_weight_delta = int(
+                    body_weight_delta_text.strip().replace("＋", "+")
+                )
+
+            result = judge_growth_candidate(
+                GrowthInput(
+                    horse_name=horse_name.strip() or "不明",
+                    body_weight_delta=body_weight_delta,
+                    has_training_pb=has_training_pb,
+                    has_stable_growth_comment=has_stable_growth_comment,
+                    position_improved=position_improved,
+                    stretch_response_improved=stretch_response_improved,
+                    can_take_front_or_mid_position=can_take_front_or_mid_position,
+                    odds_rank=odds_rank or None,
+                    notes=notes.strip() or None,
+                )
+            )
+
+            st.metric("level", result.level)
+
+            st.markdown("**tags**")
+            st.write(" ".join(result.tags) if result.tags else "なし")
+
+            st.markdown("**reasons**")
+            for reason in result.reasons:
+                st.markdown(f"- {reason}")
+
+            st.markdown("**warnings**")
+            if result.warnings:
+                for warning in result.warnings:
+                    st.warning(warning)
+            else:
+                st.write("なし")
+
+            st.markdown("**summary**")
+            st.write(result.summary)
+
+            copy_memo = "\n".join(
+                [
+                    "【成長サイン】",
+                    " ".join(result.tags) if result.tags else "なし",
+                    "",
+                    "【成長仮説】",
+                    result.summary,
+                    "",
+                    "【理由】",
+                    *[f"- {reason}" for reason in result.reasons],
+                    "",
+                    "【注意】",
+                    *(
+                        [f"- {warning}" for warning in result.warnings]
+                        if result.warnings
+                        else ["- なし"]
+                    ),
+                    "",
+                    "【映像確認】",
+                    "位置取り：",
+                    "直線手応え：",
+                    "",
+                    "【次走条件】",
+                    "人気・展開・距離・馬場を確認して判断。",
+                ]
+            )
+
+            st.text_area(
+                "コピー用メモ",
+                value=copy_memo,
+                height=260,
+                key="growth_candidate_copy_memo",
+            )
+        except Exception as exc:
+            st.error(f"成長候補判定βでエラーが発生しました: {exc}")
+
 # ======================================================
 # --- Tab 1: AI診断 ---
 # ======================================================
@@ -517,6 +647,7 @@ with tab1:
 
     render_screenshot_input_beta()
     render_e_kanaloa_screenshot_beta()
+    render_growth_candidate_beta()
 
     user_inputs = []
 
